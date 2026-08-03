@@ -1,0 +1,53 @@
+# Qwen-VL cloud-edge collab (defect OK/NG)
+# Env: conda activate base  (transformers>=4.57 + Qwen3VL)
+# Local weights under anomaly_detection_llm/model_card
+
+data_root: datasets/mvtec
+category: bottle
+seed: 42
+results_dir: outputs/qwen_vl
+
+# edge = small VLM, cloud = large VLM
+edge:
+  role: edge
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct
+  device: cuda:0
+  dtype: bfloat16          # bfloat16 | float16 | auto
+  max_new_tokens: 128
+  # treat as hard-example if confidence < this, or decision uncertain
+  conf_low: 0.55
+  conf_high: 0.85
+
+cloud:
+  role: cloud
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-8B-Instruct
+  device: cuda:1
+  dtype: bfloat16
+  max_new_tokens: 160
+
+collab:
+  # LOCAL if edge conf >= conf_high or (conf_low..high but clear);
+  # CLOUD_REVIEW if conf < conf_low or in uncertain band
+  uncertain_band: true
+  cloud_extra_latency_ms: 50.0
+  upload_bytes_hard: 120000
+  upload_bytes_full: 400000
+
+bench:
+  # smoke / demo size; set null or -1 for full test split
+  max_images: 20
+  num_workers: 0
+
+prompt: |
+  You are an industrial visual quality inspector.
+  Look at the product image and decide if it is defective.
+  Reply with ONLY one JSON object (no markdown), fields:
+  {
+    "decision": "OK" or "NG",
+    "confidence": float between 0 and 1,
+    "defect_type": string or "none",
+    "reason": short English reason
+  }
+  Rules:
+  - OK = normal / no defect; NG = any defect, damage, contamination, missing part.
+  - confidence reflects how sure you are (low if blurry, ambiguous, or borderline).

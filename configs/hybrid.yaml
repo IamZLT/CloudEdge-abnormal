@@ -1,0 +1,43 @@
+# Hybrid: edge = Anomalib light AD, cloud = Qwen-VL large model
+# Step1 (dinov3): python scripts/export_edge_scores.py --config configs/hybrid.yaml
+# Step2 (base):   python scripts/bench_hybrid.py --config configs/hybrid.yaml
+
+data_root: datasets/mvtec
+category: bottle
+seed: 42
+results_dir: outputs/hybrid
+
+edge:
+  # reuse Anomalib PaDiM checkpoint trained earlier
+  anomalib_root: outputs/anomalib
+  role: edge
+  device: cuda:0
+
+cloud:
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-8B-Instruct
+  device: cuda:0
+  dtype: bfloat16
+  max_new_tokens: 160
+
+collab:
+  low_quantile: 0.35
+  high_quantile: 0.65
+  # also mark near-threshold as hard
+  thr_margin: 0.08
+  cloud_extra_latency_ms: 50.0
+  # smoke: limit VLM calls; null = all hard samples
+  max_cloud_reviews: 12
+
+prompt: |
+  You are an industrial visual quality inspector.
+  Look at the product image and decide if it is defective.
+  Reply with ONLY one JSON object (no markdown), fields:
+  {
+    "decision": "OK" or "NG",
+    "confidence": float between 0 and 1,
+    "defect_type": string or "none",
+    "reason": short English reason
+  }
+  Rules:
+  - OK = normal / no defect; NG = any defect, damage, contamination, missing part.
+  - confidence reflects how sure you are.
