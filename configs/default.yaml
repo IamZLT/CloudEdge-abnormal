@@ -1,0 +1,39 @@
+# Preferred stack:
+# Anomalib + OpenVINO/ONNX Runtime + KubeEdge (+ Sedna paradigm) + MLflow + CVAT
+
+# conda activate dinov3
+data_root: datasets/mvtec
+# single-category default; use --category all for full MVTec (15 classes)
+category: bottle
+image_size: 256
+device: cuda:0
+seed: 42
+results_dir: outputs/anomalib
+
+edge:
+  # lightweight / fast path
+  model: Padim
+  backbone: resnet18
+  export: openvino   # openvino | onnx | torch
+
+cloud:
+  # stronger path for hard-example review
+  model: Patchcore
+  backbone: wide_resnet50_2
+  export: torch
+
+collab:
+  low_quantile: 0.35
+  high_quantile: 0.65
+  cloud_extra_latency_ms: 80.0
+  upload_bytes_hard: 80000
+  upload_bytes_full: 350000
+
+mlflow:
+  enabled: true
+  tracking_uri: outputs/mlruns
+  experiment_name: cloudedge-abnormal
+
+kubeedge:
+  # manifests only in this phase; real cluster optional
+  manifests_dir: deploy/kubeedge

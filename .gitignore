@@ -1,0 +1,68 @@
+# --- data & large artifacts ---
+datasets
+datasets/
+outputs/
+results/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.engine
+*.bin
+*.xml
+*.mapping
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# --- envs ---
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# --- ml / experiment tracking ---
+mlruns/
+mlartifacts/
+wandb/
+lightning_logs/
+.cache/
+runs/
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- logs & temp ---
+*.log
+tmp/
+temp/
+*.tmp
+*.bak
+
+# --- local secrets / keys ---
+*.pem
+*.key
+credentials.json
+secrets.yaml
