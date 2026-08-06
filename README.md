@@ -199,11 +199,11 @@ cloud/                   # 云端复核
 web/                     # FastAPI 控制台
 src/vlm/                 # Qwen-VL 客户端 / 路由
 models/                  # open_clip / dino 工具（辅助）
-docs/                    # 方案与指标清单
 asserts/edge_mlpatch/    # README 用可视化样例（jpg）
 outputs/reports/         # 汇总指标
 deploy/kubeedge/         # 部署骨架
 datasets/mvtec           # 数据软链
+# docs/ 与赛题 PDF 仅本地保留，已 gitignore，不上传
 ```
 
 ---

@@ -67,3 +67,7 @@ temp/
 *.key
 credentials.json
 secrets.yaml
+
+# --- local-only docs (do not push) ---
+docs/
+XH-202606_*.pdf
