@@ -6,13 +6,30 @@
 
 当前阶段目标：用 Anomalib 在本地数据上训练边侧/云端模型，导出边缘运行时，并给出 B0/B1/S 指标。
 
+## Web 控制台
+
+可视化总览指标、协同演示、云端 LLM 案例：
+
+```bash
+conda activate base
+cd /data2/zlt/code/CloudEdge-abnormal
+CUDA_VISIBLE_DEVICES=0 WEB_VLM_DEVICE=cuda:0 \
+  python -m uvicorn web.app:app --host 0.0.0.0 --port 7860
+```
+
+浏览器打开：`http://<host>:7860`
+
+- **总览 / 指标**：15 类 B1 / 零样本 / LoRA 对比  
+- **协同演示**：边侧分数 → 是否上云 → LLM JSON（可实时 LoRA）  
+- **LLM 案例**：浏览 `hybrid_lora_8b` 难例复核结果  
+
 ## 环境
 
 ```bash
 conda activate dinov3
 # 已安装 anomalib / openvino / onnxruntime / mlflow
+# Web / Qwen-VL：conda activate base
 ```
-
 ## 一键流程
 
 ```bash
@@ -70,6 +87,43 @@ CUDA_VISIBLE_DEVICES=0 python scripts/bench_hybrid.py --config configs/hybrid.ya
 ```
 
 输出：`outputs/hybrid/<category>/bench.md`、`llm_outputs.md`（含云端 LLM 原文）。
+
+## Qwen-VL LoRA 微调（OK/NG JSON）
+
+在 holdout 划分上微调边/云 VLM，对比零样本：
+
+```bash
+conda activate base
+
+# 1) 构建 SFT 数据（train/good + 部分 test；另留 holdout）
+python scripts/build_vlm_sft_data.py --config configs/qwen_vl_lora.yaml
+
+# 2) LoRA 微调（默认 Qwen3-VL-4B）
+CUDA_VISIBLE_DEVICES=3 python scripts/train_qwen_vl_lora.py --config configs/qwen_vl_lora.yaml
+
+# 3) holdout 上对比 zero-shot vs LoRA
+CUDA_VISIBLE_DEVICES=3 python scripts/eval_qwen_vl_lora.py --config configs/qwen_vl_lora.yaml --max-images 60
+```
+
+产物：`outputs/qwen_vl_lora/adapter/`、`eval_holdout.md`。
+
+### 接入混合协同（边侧 Anomalib + 云端 LoRA VLM）
+
+```bash
+conda activate base
+# 4B LoRA
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_hybrid_multi.py \
+  --config configs/hybrid_lora.yaml \
+  --categories screw,cable,pill,capsule,zipper \
+  --max-cloud-reviews 16 --device cuda:0
+
+# 8B LoRA（云端大模型）
+python scripts/train_qwen_vl_lora.py --config configs/qwen_vl_lora_8b.yaml
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_hybrid_multi.py \
+  --config configs/hybrid_lora_8b.yaml \
+  --categories screw,cable,pill,capsule,zipper \
+  --max-cloud-reviews 16 --device cuda:0
+```
 
 ## 目录
 

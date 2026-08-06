@@ -1,0 +1,48 @@
+# Qwen3-VL-8B LoRA fine-tune (cloud-aligned)
+# Reuses SFT JSONL from the 4B run (same split).
+
+data_root: datasets/mvtec
+categories: [screw, cable, pill, capsule, zipper]
+seed: 42
+results_dir: outputs/qwen_vl_lora_8b
+
+holdout_ratio: 0.4
+max_ok_per_category: 40
+
+model:
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-8B-Instruct
+  dtype: bfloat16
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  freeze_vision: true
+
+train:
+  num_epochs: 1
+  learning_rate: 1.0e-4
+  batch_size: 1
+  grad_accum: 8
+  max_new_tokens: 128
+  max_image_size: 512
+  logging_steps: 10
+  save_steps: 200
+  warmup_ratio: 0.03
+  device: cuda:0
+  gradient_checkpointing: true
+
+prompt: |
+  You are an industrial visual quality inspector.
+  Look at the product image and decide if it is defective.
+  Reply with ONLY one JSON object (no markdown), fields:
+  {
+    "decision": "OK" or "NG",
+    "confidence": float between 0 and 1,
+    "defect_type": string or "none",
+    "reason": short English reason
+  }
+  Rules:
+  - OK = normal / no defect; NG = any defect, damage, contamination, missing part.
+  - confidence reflects how sure you are.

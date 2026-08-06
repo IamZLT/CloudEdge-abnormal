@@ -76,11 +76,14 @@ def main():
         hard_idx = hard_idx[: int(max_reviews)]
     hard_set = set(hard_idx)
 
+    adapter = cloud_cfg.get("adapter_path")
     print(
         f"[hybrid] category={category} n={len(items)} "
         f"hard_marked={edge_pack['n_hard']} cloud_reviews={len(hard_set)}"
     )
     print(f"[hybrid] cloud VLM = {cloud_cfg['model_path']}")
+    if adapter:
+        print(f"[hybrid] LoRA adapter = {adapter}")
 
     client = QwenVLClient(
         model_path=cloud_cfg["model_path"],
@@ -89,6 +92,7 @@ def main():
         max_new_tokens=int(cloud_cfg.get("max_new_tokens", 160)),
         role="cloud",
         prompt=cfg.get("prompt"),
+        adapter_path=adapter,
     )
 
     labels = np.asarray([it["label"] for it in items], dtype=int)
@@ -149,7 +153,10 @@ def main():
             "backbone": edge_pack.get("edge_backbone"),
             "threshold": thr,
         },
-        "cloud": {"model_path": cloud_cfg["model_path"]},
+        "cloud": {
+            "model_path": cloud_cfg["model_path"],
+            "adapter_path": adapter,
+        },
         "n": len(items),
         "n_cloud_reviews": n_upload,
         "hard_upload_ratio": n_upload / max(1, len(items)),

@@ -38,7 +38,7 @@ class VLMResult:
 
 
 class QwenVLClient:
-    """Thin wrapper around local Qwen3-VL Instruct checkpoints."""
+    """Thin wrapper around local Qwen3-VL Instruct checkpoints (+ optional LoRA adapter)."""
 
     def __init__(
         self,
@@ -48,10 +48,12 @@ class QwenVLClient:
         max_new_tokens: int = 128,
         role: str = "edge",
         prompt: str | None = None,
+        adapter_path: str | None = None,
     ):
         from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
         self.model_path = str(model_path)
+        self.adapter_path = str(adapter_path) if adapter_path else None
         self.device = device
         self.role = role
         self.max_new_tokens = int(max_new_tokens)
@@ -62,6 +64,8 @@ class QwenVLClient:
 
         if not Path(self.model_path).exists():
             raise FileNotFoundError(f"model_path not found: {self.model_path}")
+        if self.adapter_path and not Path(self.adapter_path).exists():
+            raise FileNotFoundError(f"adapter_path not found: {self.adapter_path}")
 
         torch_dtype = {
             "bfloat16": torch.bfloat16,
@@ -90,6 +94,13 @@ class QwenVLClient:
         )
         if to_device is not None:
             self.model = self.model.to(to_device)
+
+        if self.adapter_path:
+            from peft import PeftModel
+
+            self.model = PeftModel.from_pretrained(self.model, self.adapter_path)
+            print(f"[{role}] loaded LoRA adapter: {self.adapter_path}")
+
         self.model.eval()
         self._input_device = next(self.model.parameters()).device
 
@@ -176,7 +187,7 @@ class QwenVLClient:
             parse_ok=bool(parsed.get("parse_ok", False)),
             raw=raw,
             role=self.role,
-            model_path=self.model_path,
+            model_path=self.adapter_path or self.model_path,
             peak_mem_mb=peak,
         )
 

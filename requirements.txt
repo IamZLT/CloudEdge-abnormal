@@ -18,3 +18,7 @@ numpy>=1.23
 # transformers>=4.57
 # qwen-vl-utils
 # accelerate
+# peft
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9

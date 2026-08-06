@@ -127,7 +127,10 @@ def run_one(cfg, category: str, client: QwenVLClient, max_reviews: int | None) -
             "backbone": edge_pack.get("edge_backbone"),
             "threshold": thr,
         },
-        "cloud": {"model_path": cfg["cloud"]["model_path"]},
+        "cloud": {
+            "model_path": cfg["cloud"]["model_path"],
+            "adapter_path": cfg["cloud"].get("adapter_path"),
+        },
         "n": len(items),
         "n_cloud_reviews": n_upload,
         "hard_upload_ratio": n_upload / max(1, len(items)),
@@ -149,6 +152,7 @@ def run_one(cfg, category: str, client: QwenVLClient, max_reviews: int | None) -
         "",
         f"- Edge: {report['edge']['model']}/{report['edge']['backbone']}",
         f"- Cloud: `{report['cloud']['model_path']}`",
+        f"- LoRA: `{report['cloud'].get('adapter_path')}`" if report["cloud"].get("adapter_path") else "",
         f"- Cloud reviews: **{n_upload}/{len(items)}** ({report['hard_upload_ratio']:.2%})",
         f"- Cloud fixed edge errors: **{cloud_fixed}** | cloud wrong on reviewed: **{cloud_wrong}**",
         "",
@@ -236,6 +240,9 @@ def main():
 
     print(f"[multi] categories={categories} max_reviews={args.max_cloud_reviews}")
     cloud_cfg = cfg["cloud"]
+    adapter = cloud_cfg.get("adapter_path")
+    if adapter:
+        print(f"[multi] LoRA adapter = {adapter}")
     client = QwenVLClient(
         model_path=cloud_cfg["model_path"],
         device=args.device or cloud_cfg.get("device", "cuda:0"),
@@ -243,6 +250,7 @@ def main():
         max_new_tokens=int(cloud_cfg.get("max_new_tokens", 160)),
         role="cloud",
         prompt=cfg.get("prompt"),
+        adapter_path=adapter,
     )
 
     summaries = []

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CloudEdge Defect · Research Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,650&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <div class="brand">
+        <div>
+          <p class="brand-name">CloudEdge Defect</p>
+          <p class="brand-sub">Cloud–Edge Collaborative Anomaly Inspection</p>
+        </div>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-panel="overview">Overview</button>
+        <button class="tab" data-panel="metrics">Metrics</button>
+        <button class="tab" data-panel="demo">Demo</button>
+        <button class="tab" data-panel="cases">LLM Cases</button>
+      </nav>
+    </header>
+
+    <main>
+      <section class="panel active" id="panel-overview">
+        <header class="section-title">
+          <span class="sec-no">01</span>
+          <div>
+            <h1>云边协同缺陷检测</h1>
+            <p class="lead">
+              边侧 Anomalib PaDiM 负责实时筛查；不确定样本上云，由 Qwen-VL + LoRA 输出结构化判读
+              <code>decision / defect_type / reason</code>。
+            </p>
+          </div>
+        </header>
+
+        <div class="pipeline-bar" aria-label="system pipeline">
+          <div class="p-step">Input Image</div>
+          <div class="p-arrow">→</div>
+          <div class="p-step emphasize-a">Edge Score</div>
+          <div class="p-arrow">→</div>
+          <div class="p-step">Hard Mining</div>
+          <div class="p-arrow">→</div>
+          <div class="p-step emphasize-b">Cloud VLM</div>
+          <div class="p-arrow">→</div>
+          <div class="p-step">OK / NG</div>
+        </div>
+
+        <div class="kpi-row" id="hero-stats">
+          <div class="kpi">
+            <span class="kpi-label">B1 Edge-only F1</span>
+            <strong id="m-b1">—</strong>
+            <span class="kpi-note">PaDiM baseline</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">Zero-shot 8B F1</span>
+            <strong id="m-zs">—</strong>
+            <span class="kpi-note">Cloud w/o finetune</span>
+          </div>
+          <div class="kpi highlight">
+            <span class="kpi-label">LoRA 8B Collab F1</span>
+            <strong id="m-l8">—</strong>
+            <span class="kpi-note">Proposed (mean@15)</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">LoRA 4B Collab F1</span>
+            <strong id="m-l4">—</strong>
+            <span class="kpi-note">Lightweight cloud</span>
+          </div>
+        </div>
+
+        <div class="method-grid" id="stack-cards">
+          <article>
+            <h3>Edge Perception</h3>
+            <p id="stack-edge">Anomalib PaDiM</p>
+          </article>
+          <article>
+            <h3>Cloud Foundation Model</h3>
+            <p id="stack-cloud">Qwen3-VL + LoRA</p>
+          </article>
+          <article>
+            <h3>Collaboration</h3>
+            <p id="stack-collab">Hard-example upload</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-metrics">
+        <header class="section-title">
+          <span class="sec-no">02</span>
+          <div>
+            <h2>全类指标对比</h2>
+            <p class="lead">MVTec AD · 15 categories · Image-level F1</p>
+          </div>
+        </header>
+        <div class="table-card">
+          <table id="metrics-table">
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>n</th>
+                <th>B1</th>
+                <th>ZS 8B</th>
+                <th>LoRA 4B</th>
+                <th>LoRA 8B</th>
+                <th>Δ(8B−B1)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-demo">
+        <header class="section-title">
+          <span class="sec-no">03</span>
+          <div>
+            <h2>协同推理演示</h2>
+            <p class="lead">边侧分数 → 路由决策 → 云端 LLM JSON（可选实时 LoRA）</p>
+          </div>
+        </header>
+        <div class="demo-layout">
+          <aside class="side-panel">
+            <label>Category
+              <select id="demo-cat"></select>
+            </label>
+            <label>Test image
+              <select id="demo-img"></select>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="demo-live" />
+              Live cloud LoRA inference
+            </label>
+            <button id="demo-run" class="btn primary">Run</button>
+            <button id="demo-load-cloud" class="btn">Preload cloud model</button>
+            <p class="hint" id="demo-status">Ready</p>
+          </aside>
+          <div class="demo-main">
+            <figure class="figure">
+              <img id="demo-preview" alt="preview" />
+              <figcaption>Selected sample</figcaption>
+            </figure>
+            <div class="viz-grid" id="demo-viz">
+              <figure class="figure viz">
+                <img id="viz-edge" alt="edge anomaly map" />
+                <figcaption>边侧 Anomalib（PaDiM）· Image | GT | Heatmap | Pred mask</figcaption>
+              </figure>
+              <figure class="figure viz">
+                <img id="viz-cloud" alt="heavy anomalib anomaly map" />
+                <figcaption>对比：云侧重型 Anomalib（PatchCore，非 VLM）· 热力图仅来自传统检测</figcaption>
+              </figure>
+            </div>
+            <p class="hint" id="viz-status">热力图来自 Anomalib，不是 Qwen-VL。云端 VLM 只输出下方 JSON（decision / reason）。</p>
+            <div class="result-grid" id="demo-pipeline">
+              <div class="result-box">
+                <h4>Edge</h4>
+                <pre id="out-edge">Waiting…</pre>
+              </div>
+              <div class="result-box">
+                <h4>Route</h4>
+                <pre id="out-route">—</pre>
+              </div>
+              <div class="result-box">
+                <h4>Meta</h4>
+                <pre id="out-final">—</pre>
+              </div>
+              <div class="result-box emphasis">
+                <h4>Final Decision</h4>
+                <pre id="out-decision">—</pre>
+              </div>
+            </div>
+            <div class="llm-panel" id="llm-panel">
+              <div class="llm-head">
+                <h3>Cloud LLM Output</h3>
+                <span class="llm-badge" id="llm-badge">idle</span>
+              </div>
+              <div class="llm-fields" id="llm-fields">
+                <div><span>decision</span><strong id="llm-decision">—</strong></div>
+                <div><span>confidence</span><strong id="llm-conf">—</strong></div>
+                <div><span>defect_type</span><strong id="llm-type">—</strong></div>
+              </div>
+              <p class="llm-reason" id="llm-reason">选择带 “LLM” 标记的样本并点击 Run，将显示云端模型原文。</p>
+              <pre class="llm-raw" id="out-cloud"></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-cases">
+        <header class="section-title row">
+          <div class="title-left">
+            <span class="sec-no">04</span>
+            <div>
+              <h2>云端 LLM 复核案例</h2>
+              <p class="lead">Hard samples reviewed by Qwen3-VL-8B + LoRA</p>
+            </div>
+          </div>
+          <label class="inline-label">Category
+            <select id="case-cat"></select>
+          </label>
+        </header>
+        <div class="case-grid" id="case-grid"></div>
+      </section>
+    </main>
+
+    <footer>
+      <span>CloudEdge-abnormal · research demo</span>
+      <span id="health-line">checking…</span>
+    </footer>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

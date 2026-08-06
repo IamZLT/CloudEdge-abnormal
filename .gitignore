@@ -3,6 +3,7 @@ datasets
 datasets/
 outputs/
 results/
+model_card/
 *.ckpt
 *.pt
 *.pth

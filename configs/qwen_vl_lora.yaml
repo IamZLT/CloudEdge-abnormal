@@ -1,0 +1,53 @@
+# Qwen-VL LoRA fine-tune for OK/NG JSON defect inspection
+# Env: conda activate base
+
+data_root: datasets/mvtec
+# null / all = all MVTec categories with train/good + test
+categories: [screw, cable, pill, capsule, zipper]
+seed: 42
+results_dir: outputs/qwen_vl_lora
+
+# hold out this fraction of EACH test subfolder for evaluation (no train leak)
+holdout_ratio: 0.4
+
+# balance: max normal samples per category in train (null = all train/good)
+max_ok_per_category: 40
+
+model:
+  # start with 4B for faster LoRA trial; switch to 8B for cloud-aligned
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct
+  # after train, adapter saved under results_dir/adapter
+  dtype: bfloat16
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  freeze_vision: true
+
+train:
+  num_epochs: 1
+  learning_rate: 1.0e-4
+  batch_size: 1
+  grad_accum: 8
+  max_new_tokens: 128   # unused in train; for eval
+  max_image_size: 512
+  logging_steps: 10
+  save_steps: 200
+  warmup_ratio: 0.03
+  device: auto          # auto | cuda:0 | cuda:0,1
+
+prompt: |
+  You are an industrial visual quality inspector.
+  Look at the product image and decide if it is defective.
+  Reply with ONLY one JSON object (no markdown), fields:
+  {
+    "decision": "OK" or "NG",
+    "confidence": float between 0 and 1,
+    "defect_type": string or "none",
+    "reason": short English reason
+  }
+  Rules:
+  - OK = normal / no defect; NG = any defect, damage, contamination, missing part.
+  - confidence reflects how sure you are.
