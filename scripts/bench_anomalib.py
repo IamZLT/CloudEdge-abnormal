@@ -151,6 +151,7 @@ def to_markdown(report: dict) -> str:
             f"| M2 first-response reduce | {m['M2_ttft_reduce']:.2%} | ≥75% |",
             f"| M3 edge peak mem | {m['M3_edge_mem_mb']:.1f} MB | ≤1536 |",
             f"| M4 weak-net keep | {m['M4_weak_keep']:.2%} | ≥90% |",
+            f"| M4 cloud upload success | {m.get('M4_cloud_upload_success_rate', float('nan')):.2%} | profile-dependent |",
             f"| M5 local e2e | {m['M5_local_ms']:.2f} ms | ≤200 |",
             f"| M6 conflict ratio | {m['M6_conflict_ratio']:.2%} | ≤5% |",
             f"| M7 resolve rate | {m['M7_resolve_rate']:.2%} | ≥90% |",
@@ -175,10 +176,21 @@ def list_mvtec_categories(data_root: str | Path) -> list[str]:
     )
 
 
+def resolve_anomalib_root(cfg: dict) -> Path:
+    """Match train_anomalib: park checkpoints under outputs/anomalib when results_dir is generic."""
+    root = Path(cfg.get("anomalib_results_dir") or cfg.get("results_dir") or "outputs/anomalib")
+    if root.name == "anomalib":
+        return root
+    alt = (((cfg.get("edge") or {}).get("alternatives") or {}).get("padim") or {}).get("anomalib_root")
+    if alt:
+        return Path(alt)
+    return Path("outputs/anomalib")
+
+
 def bench_category(cfg: dict, category: str, device: str) -> dict:
     from anomalib.data import MVTecAD
 
-    base = Path(cfg["results_dir"]) / category
+    base = resolve_anomalib_root(cfg) / category
     edge_meta = base / "edge" / "train_meta.json"
     cloud_meta = base / "cloud" / "train_meta.json"
     if not edge_meta.exists() or not cloud_meta.exists():
@@ -228,11 +240,31 @@ def bench_category(cfg: dict, category: str, device: str) -> dict:
     n = len(labels)
     n_hard = int(hard.sum())
 
-    s_scores = edge_scores.copy()
-    s_scores[hard] = cloud_scores[hard]
+    from src.network_sim import NetworkSimulator, apply_collab_uploads
+
+    net_cfg = dict(collab.get("network") or {})
+    if "profile" not in net_cfg:
+        net_cfg["profile"] = "fair"
+    sim = NetworkSimulator.from_config(net_cfg)
+    # per-sample latency lists (mean infer used as constant; accounting only)
+    edge_lat_list = [float(edge_lat)] * n
+    cloud_lat_list = [float(cloud_lat)] * n
+    s_scores, s_lat, cloud_ok, net_outcomes = apply_collab_uploads(
+        hard_mask=hard,
+        edge_scores=edge_scores,
+        cloud_scores=cloud_scores,
+        edge_lat_ms=edge_lat_list,
+        cloud_lat_ms=cloud_lat_list,
+        upload_bytes_hard=up_hard,
+        sim=sim,
+        legacy_extra_ms=0.0,
+    )
+    n_upload_ok = int(cloud_ok.sum())
+    net_summary = sim.summarize(net_outcomes)
+
     b0 = _det(labels, cloud_scores, cloud_thr)
     b1 = _det(labels, edge_scores, edge_thr)
-    s_preds = np.where(hard, (s_scores >= cloud_thr).astype(int), (s_scores >= edge_thr).astype(int))
+    s_preds = np.where(cloud_ok, (s_scores >= cloud_thr).astype(int), (s_scores >= edge_thr).astype(int))
     s = {
         "image_auroc": float(roc_auc_score(labels, s_scores)) if len(np.unique(labels)) > 1 else float("nan"),
         "f1": float(f1_score(labels, s_preds, zero_division=0)),
@@ -246,8 +278,8 @@ def bench_category(cfg: dict, category: str, device: str) -> dict:
 
     b0_mean = cloud_lat + extra
     b1_mean = edge_lat
-    s_all = [edge_lat + cloud_lat + extra if hard[i] else edge_lat for i in range(n)]
-    s_local = [edge_lat] * max(1, n - n_hard)
+    s_all = s_lat
+    s_local = [edge_lat_list[i] for i in range(n) if not hard[i]] or [edge_lat]
 
     rng = np.random.default_rng(0)
     edge2 = edge_scores + rng.normal(0, float(np.std(edge_scores) * 0.05 + 1e-6), size=n)
@@ -264,6 +296,8 @@ def bench_category(cfg: dict, category: str, device: str) -> dict:
             "band_high": band_high,
             "n_hard": n_hard,
             "hard_ratio": n_hard / max(1, n),
+            "n_cloud_upload_ok": n_upload_ok,
+            "cloud_upload_success_rate": net_summary.get("cloud_upload_success_rate"),
         },
         "detection": {"B0": b0, "B1": b1, "S": s},
         "latency_ms": {
@@ -277,15 +311,18 @@ def bench_category(cfg: dict, category: str, device: str) -> dict:
         "communication": {
             "hard_ratio": n_hard / max(1, n),
             "B0_upload_bytes": n * up_full,
-            "S_upload_bytes": n_hard * up_hard,
-            "upload_reduce_vs_B0": (n * up_full - n_hard * up_hard) / max(1, n * up_full),
+            "S_upload_bytes": n_upload_ok * up_hard,
+            "upload_reduce_vs_B0": (n * up_full - n_upload_ok * up_hard) / max(1, n * up_full),
+            "network": net_summary,
         },
         "contest_mapped": {
             "M1_auroc_retention": float(b1["image_auroc"] / b0["image_auroc"]) if b0["image_auroc"] else float("nan"),
             "M1_f1_retention": float(b1["f1"] / b0["f1"]) if b0["f1"] else float("nan"),
             "M2_ttft_reduce": float((b0_mean - b1_mean) / max(1e-6, b0_mean)),
             "M3_edge_mem_mb": float(edge_mem),
+            # edge always returns a decision under network failure → service kept
             "M4_weak_keep": 1.0,
+            "M4_cloud_upload_success_rate": float(net_summary.get("cloud_upload_success_rate") or 0.0),
             "M5_local_ms": float(np.mean(s_local)),
             "M6_conflict_ratio": float(conflict.mean()),
             "M7_resolve_rate": 1.0,
@@ -336,6 +373,7 @@ def aggregate_reports(reports: list[dict]) -> dict:
         "M2_ttft_reduce",
         "M3_edge_mem_mb",
         "M4_weak_keep",
+        "M4_cloud_upload_success_rate",
         "M5_local_ms",
         "M6_conflict_ratio",
         "M7_resolve_rate",

@@ -302,7 +302,7 @@ def run_padim(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--methods", nargs="+", default=["clip", "dinov3"])
+    ap.add_argument("--methods", nargs="+", default=["qwen35"], help="default edge: qwen35")
     ap.add_argument("--categories", nargs="+", default=["bottle", "screw"])
     ap.add_argument("--data-root", default=str(ROOT / "datasets" / "mvtec"))
     ap.add_argument("--anomalib-root", default=str(ROOT / "outputs" / "anomalib"))

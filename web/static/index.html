@@ -33,7 +33,7 @@
           <div>
             <h1>云边协同缺陷检测</h1>
             <p class="lead">
-              边侧 Anomalib PaDiM 负责实时筛查；不确定样本上云，由 Qwen-VL + LoRA 输出结构化判读
+              边侧 Qwen3.5-0.8B 视觉塔多层 patch 负责实时筛查；不确定样本上云，由 Qwen-VL + LoRA 输出结构化判读
               <code>decision / defect_type / reason</code>。
             </p>
           </div>
@@ -44,7 +44,9 @@
           <div class="p-arrow">→</div>
           <div class="p-step emphasize-a">Edge Score</div>
           <div class="p-arrow">→</div>
-          <div class="p-step">Hard Mining</div>
+          <div class="p-step">RouteAgent</div>
+          <div class="p-arrow">→</div>
+          <div class="p-step">Network Sim</div>
           <div class="p-arrow">→</div>
           <div class="p-step emphasize-b">Cloud VLM</div>
           <div class="p-arrow">→</div>
@@ -55,7 +57,7 @@
           <div class="kpi">
             <span class="kpi-label">B1 Edge-only F1</span>
             <strong id="m-b1">—</strong>
-            <span class="kpi-note">PaDiM baseline</span>
+            <span class="kpi-note">Edge baseline (cached)</span>
           </div>
           <div class="kpi">
             <span class="kpi-label">Zero-shot 8B F1</span>
@@ -77,7 +79,7 @@
         <div class="method-grid" id="stack-cards">
           <article>
             <h3>Edge Perception</h3>
-            <p id="stack-edge">Anomalib PaDiM</p>
+            <p id="stack-edge">Qwen3.5-0.8B vision (ML patch)</p>
           </article>
           <article>
             <h3>Cloud Foundation Model</h3>
@@ -121,9 +123,45 @@
           <span class="sec-no">03</span>
           <div>
             <h2>协同推理演示</h2>
-            <p class="lead">边侧分数 → 路由决策 → 云端 LLM JSON（可选实时 LoRA）</p>
+            <p class="lead">边侧分数 → Qwen3.5 RouteAgent → 网络仿真 → 云端 LLM（可选实时 LoRA）</p>
           </div>
         </header>
+
+        <div class="net-panel" id="net-panel">
+          <div class="net-head">
+            <div>
+              <h3>实时网络状态</h3>
+              <p class="hint">边–云链路仿真（RTT / 带宽 / 丢包）· 波形随剖面变化</p>
+            </div>
+            <div class="net-controls">
+              <label>Profile
+                <select id="net-profile">
+                  <option value="good">good</option>
+                  <option value="fair" selected>fair</option>
+                  <option value="weak">weak</option>
+                  <option value="outage">outage</option>
+                </select>
+              </label>
+              <button type="button" id="net-disconnect" class="btn danger">断网</button>
+              <button type="button" id="net-restore" class="btn" disabled>恢复网络</button>
+              <span class="net-chip" id="net-chip">fair</span>
+            </div>
+          </div>
+          <div class="net-stats" id="net-stats">
+            <div><span>RTT</span><strong id="net-rtt">—</strong></div>
+            <div><span>Bandwidth</span><strong id="net-bw">—</strong></div>
+            <div><span>Loss</span><strong id="net-loss">—</strong></div>
+            <div><span>Timeout</span><strong id="net-timeout">—</strong></div>
+            <div><span>Last probe</span><strong id="net-probe">—</strong></div>
+          </div>
+          <canvas id="net-wave" width="960" height="160" aria-label="network waveform"></canvas>
+          <div class="net-legend">
+            <span class="lg rtt">RTT ms</span>
+            <span class="lg bw">Bandwidth Mbps×10</span>
+            <span class="lg loss">Loss %×10</span>
+          </div>
+        </div>
+
         <div class="demo-layout">
           <aside class="side-panel">
             <label>Category
@@ -133,10 +171,15 @@
               <select id="demo-img"></select>
             </label>
             <label class="check">
+              <input type="checkbox" id="demo-route-agent" checked />
+              Use Qwen3.5 RouteAgent
+            </label>
+            <label class="check">
               <input type="checkbox" id="demo-live" />
               Live cloud LoRA inference
             </label>
             <button id="demo-run" class="btn primary">Run</button>
+            <button id="demo-load-route" class="btn">Preload RouteAgent</button>
             <button id="demo-load-cloud" class="btn">Preload cloud model</button>
             <p class="hint" id="demo-status">Ready</p>
           </aside>
@@ -148,7 +191,7 @@
             <div class="viz-grid" id="demo-viz">
               <figure class="figure viz">
                 <img id="viz-edge" alt="edge anomaly map" />
-                <figcaption>边侧 Anomalib（PaDiM）· Image | GT | Heatmap | Pred mask</figcaption>
+                <figcaption>边侧热力图（缓存 Anomalib PaDiM 条带；在线默认 Qwen0.8B ML-patch）</figcaption>
               </figure>
               <figure class="figure viz">
                 <img id="viz-cloud" alt="heavy anomalib anomaly map" />
@@ -162,7 +205,7 @@
                 <pre id="out-edge">Waiting…</pre>
               </div>
               <div class="result-box">
-                <h4>Route</h4>
+                <h4>RouteAgent</h4>
                 <pre id="out-route">—</pre>
               </div>
               <div class="result-box">
@@ -173,6 +216,14 @@
                 <h4>Final Decision</h4>
                 <pre id="out-decision">—</pre>
               </div>
+            </div>
+            <div class="llm-panel route-llm" id="route-llm-panel">
+              <div class="llm-head">
+                <h3>RouteAgent LLM Output</h3>
+                <span class="llm-badge" id="route-llm-badge">idle</span>
+              </div>
+              <p class="llm-reason" id="route-llm-reason">Run 后显示路由智能体原文 JSON。</p>
+              <pre class="llm-raw" id="out-route-raw"></pre>
             </div>
             <div class="llm-panel" id="llm-panel">
               <div class="llm-head">

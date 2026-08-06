@@ -202,7 +202,7 @@ def load_qwen35_vision_encoder(
     vc = dict(raw["vision_config"])
     vc.pop("model_type", None)
     cfg = Qwen3VLVisionConfig(**vc)
-    visual = Qwen3VLVisionModel(cfg).to(device=device, dtype=torch.bfloat16)
+    visual = Qwen3VLVisionModel(cfg)
 
     state: dict[str, torch.Tensor] = {}
     for shard in sorted(model_path.glob("*.safetensors")):
@@ -211,6 +211,8 @@ def load_qwen35_vision_encoder(
                 if k.startswith("model.visual."):
                     state[k[len("model.visual.") :]] = f.get_tensor(k)
     missing, unexpected = visual.load_state_dict(state, strict=False)
+    # load_state_dict may reintroduce fp32 weights — cast after load (transformers 5.x)
+    visual = visual.to(device=device, dtype=torch.bfloat16)
     loader_note = (
         f"remapped model.visual.* -> Qwen3VLVisionModel; "
         f"loaded={len(state)} missing={len(missing)} unexpected={len(unexpected)}; "
@@ -271,8 +273,10 @@ def load_qwen35_vision_encoder(
 
         hidden_states = visual.patch_embed(pv)
         pos_embeds = visual.fast_pos_embed_interpolate(grid)
+        # transformers 5.x may return fp32 pos embeds → keep activation dtype = model dtype
+        pos_embeds = pos_embeds.to(dtype=hidden_states.dtype)
         hidden_states = hidden_states + pos_embeds
-        rotary_pos_emb = visual.rot_pos_emb(grid)
+        rotary_pos_emb = visual.rot_pos_emb(grid).to(dtype=hidden_states.dtype)
         seq_len, _ = hidden_states.size()
         hidden_states = hidden_states.reshape(seq_len, -1)
         rotary_pos_emb = rotary_pos_emb.reshape(seq_len, -1)

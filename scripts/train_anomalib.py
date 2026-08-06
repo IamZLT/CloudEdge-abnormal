@@ -25,6 +25,23 @@ def build_datamodule(cfg: dict):
     )
 
 
+def resolve_role_cfg(cfg: dict, role: str) -> dict:
+    """Anomalib role config. Edge default is Qwen gallery; PaDiM lives under edge.alternatives."""
+    role_cfg = dict(cfg.get(role) or {})
+    if role == "edge" and not role_cfg.get("model"):
+        alt = (role_cfg.get("alternatives") or {}).get("padim") or {}
+        role_cfg = {**role_cfg, **alt}
+    if not role_cfg.get("model"):
+        # fallback for older configs
+        if role == "edge":
+            role_cfg.setdefault("model", "Padim")
+            role_cfg.setdefault("backbone", "resnet18")
+        elif role == "cloud":
+            role_cfg.setdefault("model", "Patchcore")
+            role_cfg.setdefault("backbone", "wide_resnet50_2")
+    return role_cfg
+
+
 def build_model(role_cfg: dict):
     from src.offline_timm import enable as enable_offline_timm
 
@@ -43,14 +60,19 @@ def build_model(role_cfg: dict):
         from anomalib.models import EfficientAd
 
         return EfficientAd()
-    raise ValueError(f"Unsupported model: {role_cfg['model']}")
+    raise ValueError(f"Unsupported Anomalib model: {role_cfg['model']}")
 
 
 def train_role(role: str, cfg: dict, *, do_export: bool = True) -> dict:
     from anomalib.engine import Engine
 
-    role_cfg = cfg[role]
-    out_dir = Path(cfg["results_dir"]) / cfg["category"] / role
+    role_cfg = resolve_role_cfg(cfg, role)
+    # keep anomalib outputs under outputs/anomalib even if results_dir is generic
+    results_root = Path(cfg.get("anomalib_results_dir") or cfg.get("results_dir") or "outputs/anomalib")
+    if results_root.name != "anomalib" and role in {"edge", "cloud"}:
+        # default.yaml now uses results_dir=outputs; park Anomalib under outputs/anomalib
+        results_root = Path("outputs/anomalib")
+    out_dir = results_root / cfg["category"] / role
     out_dir.mkdir(parents=True, exist_ok=True)
 
     datamodule = build_datamodule(cfg)

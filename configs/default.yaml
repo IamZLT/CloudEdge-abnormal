@@ -1,26 +1,45 @@
-# Preferred stack:
-# Anomalib + OpenVINO/ONNX Runtime + KubeEdge (+ Sedna paradigm) + MLflow + CVAT
+# Default stack for CloudEdge-abnormal
+# Edge default: Qwen3.5-0.8B vision multi-layer patch gallery
+# Cloud: Qwen3-VL (+LoRA) hard-example review
+# Optional light AD: Anomalib PaDiM (see edge.alternatives)
 
-# conda activate dinov3
 data_root: datasets/mvtec
-# single-category default; use --category all for full MVTec (15 classes)
 category: bottle
-image_size: 256
+image_size: 224
 device: cuda:0
 seed: 42
-results_dir: outputs/anomalib
+results_dir: outputs
 
 edge:
-  # lightweight / fast path
-  model: Padim
-  backbone: resnet18
-  export: openvino   # openvino | onnx | torch
+  # default edge AD (alias: qwen35_mlpatch)
+  method: qwen35
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  # processor fallback for Qwen3.5 packing (if local processor unsupported)
+  processor_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct
+  layers: [6, 8, 10, 12]
+  fusion_temp: 0.5
+  max_gallery: 16
+  max_pixels: 50176   # 224*224
+  device: cuda:0
+  # decision: score >= threshold → NG; null = calibrate from gallery quantile
+  threshold: null
+  thr_quantile: 0.95
+  thr_margin: 0.05
+  hard_margin: 0.05
+
+  # optional Anomalib fallback (not default)
+  alternatives:
+    padim:
+      model: Padim
+      backbone: resnet18
+      anomalib_root: outputs/anomalib
+      export: openvino
 
 cloud:
-  # stronger path for hard-example review
   model: Patchcore
   backbone: wide_resnet50_2
   export: torch
+  # VLM cloud review uses configs/hybrid*.yaml
 
 collab:
   low_quantile: 0.35
@@ -28,6 +47,24 @@ collab:
   cloud_extra_latency_ms: 80.0
   upload_bytes_hard: 80000
   upload_bytes_full: 350000
+  # edge–cloud link simulation (accounting only; see src/network_sim.py)
+  network:
+    profile: fair   # good|fair|weak|outage|custom
+    seed: 42
+    # custom overrides (optional):
+    # rtt_ms: 80
+    # rtt_jitter_ms: 30
+    # bandwidth_mbps: 10
+    # loss_prob: 0.02
+    # timeout_ms: 2000
+  # Qwen3.5-0.8B multimodal agent: decide upload vs local (needs transformers>=5.3)
+  route_agent:
+    enabled: true
+    model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+    device: cuda:0
+    dtype: bfloat16
+    max_new_tokens: 96
+    hard_block_on_outage: true
 
 mlflow:
   enabled: true
@@ -35,5 +72,4 @@ mlflow:
   experiment_name: cloudedge-abnormal
 
 kubeedge:
-  # manifests only in this phase; real cluster optional
   manifests_dir: deploy/kubeedge

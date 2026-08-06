@@ -71,29 +71,86 @@ def main():
     if max_reviews is None:
         max_reviews = collab.get("max_cloud_reviews", None)
 
-    hard_idx = [i for i, it in enumerate(items) if it.get("hard")]
+    from src.network_sim import NetworkSimulator
+    from src.vlm.route_agent import RouteAgent, RouteContext, resolve_network_profile
+
+    ra_cfg = dict(collab.get("route_agent") or {})
+    use_route_agent = bool(ra_cfg.get("enabled", False))
+    net_profile, net_dict = resolve_network_profile(collab)
+    up_hard = int(collab.get("upload_bytes_hard", 80000))
+    net_sim = NetworkSimulator.from_config(dict(collab.get("network") or {"profile": net_profile}))
+
+    hard_marked_idx = [i for i, it in enumerate(items) if it.get("hard")]
+    n_gallery = int(edge_pack.get("n_gallery") or edge_pack.get("n_train") or 16)
+    hard_margin = float(collab.get("thr_margin", 0.08))
+    device = args.device or cloud_cfg.get("device", "cuda:0")
+
+    # --- RouteAgent phase (optional): decide who wants cloud ---
+    want_upload = [False] * len(items)
+    route_rows: list[dict | None] = [None] * len(items)
+    if use_route_agent:
+        print(f"[hybrid] RouteAgent enabled profile={net_profile} model={ra_cfg.get('model_path')}")
+        agent = RouteAgent.from_config({**ra_cfg, "device": ra_cfg.get("device") or device})
+        # Decide on hard-marked candidates; cold-start (n_gallery==0) → all samples
+        cand = list(range(len(items))) if n_gallery <= 0 else hard_marked_idx
+        for i in cand:
+            it = items[i]
+            img = it["path"]
+            if not Path(img).exists():
+                alt = Path(cfg["data_root"]) / category / "test" / Path(img).parent.name / Path(img).name
+                if alt.exists():
+                    img = str(alt)
+            ctx = RouteContext(
+                image=img,
+                category=category,
+                n_gallery=n_gallery,
+                edge_score=float(it["edge_score"]),
+                edge_thr=thr,
+                edge_decision="NG" if it["edge_pred"] else "OK",
+                network_profile=net_profile,
+                network=net_dict,
+                hard_margin=hard_margin,
+            )
+            dec = agent.decide(ctx)
+            route_rows[i] = dec.to_dict()
+            want_upload[i] = bool(dec.upload)
+        # free agent VRAM before loading cloud VLM
+        del agent
+        import gc
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        upload_idx = [i for i, w in enumerate(want_upload) if w]
+    else:
+        upload_idx = list(hard_marked_idx)
+
     if max_reviews is not None and int(max_reviews) >= 0:
-        hard_idx = hard_idx[: int(max_reviews)]
-    hard_set = set(hard_idx)
+        upload_idx = upload_idx[: int(max_reviews)]
+    upload_set = set(upload_idx)
 
     adapter = cloud_cfg.get("adapter_path")
     print(
         f"[hybrid] category={category} n={len(items)} "
-        f"hard_marked={edge_pack['n_hard']} cloud_reviews={len(hard_set)}"
+        f"hard_marked={edge_pack['n_hard']} route_want={sum(want_upload)} "
+        f"cloud_attempts={len(upload_set)} network={net_profile}"
     )
     print(f"[hybrid] cloud VLM = {cloud_cfg['model_path']}")
     if adapter:
         print(f"[hybrid] LoRA adapter = {adapter}")
 
-    client = QwenVLClient(
-        model_path=cloud_cfg["model_path"],
-        device=args.device or cloud_cfg.get("device", "cuda:0"),
-        dtype=cloud_cfg.get("dtype", "bfloat16"),
-        max_new_tokens=int(cloud_cfg.get("max_new_tokens", 160)),
-        role="cloud",
-        prompt=cfg.get("prompt"),
-        adapter_path=adapter,
-    )
+    client = None
+    if upload_set and net_profile != "outage":
+        client = QwenVLClient(
+            model_path=cloud_cfg["model_path"],
+            device=device,
+            dtype=cloud_cfg.get("dtype", "bfloat16"),
+            max_new_tokens=int(cloud_cfg.get("max_new_tokens", 160)),
+            role="cloud",
+            prompt=cfg.get("prompt"),
+            adapter_path=adapter,
+        )
 
     labels = np.asarray([it["label"] for it in items], dtype=int)
     edge_scores = np.asarray([it["edge_score"] for it in items], dtype=float)
@@ -106,7 +163,9 @@ def main():
     s_scores = edge_scores.copy()
     rows = []
     cloud_lats = []
-    n_upload = 0
+    n_upload_ok = 0
+    n_upload_attempt = 0
+    net_outcomes = []
 
     for i, it in enumerate(items):
         row = {
@@ -115,35 +174,48 @@ def main():
             "edge_score": it["edge_score"],
             "edge_pred": "NG" if it["edge_pred"] else "OK",
             "hard_marked": bool(it.get("hard")),
+            "route": route_rows[i],
             "cloud": None,
             "final_decision": "NG" if it["edge_pred"] else "OK",
             "path_type": "LOCAL",
+            "network": None,
         }
-        if i in hard_set:
-            n_upload += 1
-            img = it["path"]
-            # paths from anomalib may be absolute under abnormal_dataset
-            if not Path(img).exists():
-                # try relative under data_root
-                alt = Path(cfg["data_root"]) / category / "test" / Path(img).parent.name / Path(img).name
-                if alt.exists():
-                    img = str(alt)
-            res = client.infer(img)
-            cloud_lats.append(res.latency_ms)
-            cloud_pred = 1 if res.decision == "NG" else 0
-            s_preds[i] = cloud_pred
-            # anomaly score proxy from VLM
-            s_scores[i] = res.confidence if res.decision == "NG" else (1.0 - res.confidence)
-            row["cloud"] = res.to_dict()
-            row["final_decision"] = res.decision
-            row["path_type"] = "CLOUD_REVIEW"
-            print(
-                f"[{n_upload}/{len(hard_set)}] cloud {res.decision}/{res.confidence:.2f} "
-                f"type={res.defect_type} reason={res.reason} :: {Path(img).name}"
-            )
+        if i in upload_set:
+            n_upload_attempt += 1
+            outcome = net_sim.try_upload(up_hard)
+            net_outcomes.append(outcome)
+            row["network"] = outcome.to_dict()
+            if not outcome.ok:
+                row["path_type"] = "LOCAL_NET_FALLBACK"
+                print(
+                    f"[{n_upload_attempt}/{len(upload_set)}] net fail ({outcome.failed_reason}) "
+                    f"→ edge local :: {Path(it['path']).name}"
+                )
+            elif client is None:
+                row["path_type"] = "LOCAL_NET_FALLBACK"
+            else:
+                img = it["path"]
+                if not Path(img).exists():
+                    alt = Path(cfg["data_root"]) / category / "test" / Path(img).parent.name / Path(img).name
+                    if alt.exists():
+                        img = str(alt)
+                res = client.infer(img)
+                n_upload_ok += 1
+                cloud_lats.append(res.latency_ms + outcome.total_net_ms)
+                cloud_pred = 1 if res.decision == "NG" else 0
+                s_preds[i] = cloud_pred
+                s_scores[i] = res.confidence if res.decision == "NG" else (1.0 - res.confidence)
+                row["cloud"] = res.to_dict()
+                row["final_decision"] = res.decision
+                row["path_type"] = "CLOUD_REVIEW"
+                print(
+                    f"[{n_upload_ok}/{len(upload_set)}] cloud {res.decision}/{res.confidence:.2f} "
+                    f"type={res.defect_type} reason={res.reason} :: {Path(img).name}"
+                )
         rows.append(row)
 
     s = _det_binary(labels, s_preds, s_scores)
+    net_summary = net_sim.summarize(net_outcomes)
 
     report = {
         "mode": "hybrid_edge_anomalib_cloud_qwen_vl",
@@ -157,9 +229,20 @@ def main():
             "model_path": cloud_cfg["model_path"],
             "adapter_path": adapter,
         },
+        "route_agent": {
+            "enabled": use_route_agent,
+            "network_profile": net_profile,
+            "n_want_upload": int(sum(want_upload)),
+        },
         "n": len(items),
-        "n_cloud_reviews": n_upload,
-        "hard_upload_ratio": n_upload / max(1, len(items)),
+        "n_cloud_reviews": n_upload_ok,
+        "n_cloud_attempts": n_upload_attempt,
+        "hard_upload_ratio": n_upload_ok / max(1, len(items)),
+        "communication": {"network": net_summary},
+        "contest_mapped": {
+            "M4_weak_net_service_keep_rate": 1.0,
+            "M4_cloud_upload_success_rate": float(net_summary.get("cloud_upload_success_rate") or 0.0),
+        },
         "detection": {
             "B1_edge_only": b1,
             "S_collab": s,
@@ -170,6 +253,7 @@ def main():
         },
         "rows": rows,
     }
+    n_upload = n_upload_ok  # for markdown below
 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "bench.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")

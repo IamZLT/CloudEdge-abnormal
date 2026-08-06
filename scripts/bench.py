@@ -126,7 +126,11 @@ def main():
     ds = MVTecCategory(cfg["data_root"], category, "test", cfg["image_size"])
     loader = DataLoader(ds, batch_size=4, shuffle=False, num_workers=2, pin_memory=device.startswith("cuda"))
 
-    collab = CollabConfig(**cfg.get("collab", {}))
+    from dataclasses import fields as dc_fields
+
+    raw_collab = dict(cfg.get("collab", {}) or {})
+    allowed = {f.name for f in dc_fields(CollabConfig)}
+    collab = CollabConfig(**{k: v for k, v in raw_collab.items() if k in allowed})
     report = run_baselines(edge, cloud, loader, collab, torch.device(device))
     report["category"] = category
     report["device"] = device

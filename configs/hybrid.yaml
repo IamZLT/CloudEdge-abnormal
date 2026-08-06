@@ -8,7 +8,9 @@ seed: 42
 results_dir: outputs/hybrid
 
 edge:
-  # reuse Anomalib PaDiM checkpoint trained earlier
+  # Preferred live edge: Qwen3.5-0.8B (configs/edge_qwen35.yaml, python -m edge.infer).
+  # Hybrid score export below still reuses Anomalib PaDiM banks for offline routing benches.
+  method: qwen35
   anomalib_root: outputs/anomalib
   role: edge
   device: cuda:0
@@ -27,6 +29,16 @@ collab:
   cloud_extra_latency_ms: 50.0
   # smoke: limit VLM calls; null = all hard samples
   max_cloud_reviews: 12
+  network:
+    profile: fair   # good|fair|weak|outage|custom
+    seed: 42
+  route_agent:
+    enabled: true
+    model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+    device: cuda:0
+    dtype: bfloat16
+    max_new_tokens: 96
+    hard_block_on_outage: true
 
 prompt: |
   You are an industrial visual quality inspector.

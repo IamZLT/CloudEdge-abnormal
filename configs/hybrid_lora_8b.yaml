@@ -6,6 +6,8 @@ seed: 42
 results_dir: outputs/hybrid_lora_8b
 
 edge:
+  # live default is Qwen3.5-0.8B (configs/edge_qwen35.yaml); export may still use PaDiM banks
+  method: qwen35
   anomalib_root: outputs/anomalib
   role: edge
   device: cuda:0

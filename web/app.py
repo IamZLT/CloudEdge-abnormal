@@ -13,6 +13,8 @@ import json
 import os
 import sys
 import threading
+import time
+from collections import deque
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,7 @@ WEB_DIR = Path(__file__).resolve().parent
 STATIC_DIR = WEB_DIR / "static"
 DATA_ROOT = ROOT / "datasets" / "mvtec"
 IMG_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+DEFAULT_CFG = ROOT / "configs" / "default.yaml"
 
 app = FastAPI(title="CloudEdge Defect Console", version="0.1.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -37,6 +40,102 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 _cloud_client = None
 _cloud_lock = threading.Lock()
 _cloud_error: str | None = None
+
+_route_agent = None
+_route_agent_lock = threading.Lock()
+_route_agent_error: str | None = None
+
+# ---- live network simulation state (shared by demo + waveform) ----
+_net_lock = threading.Lock()
+_net_cfg: dict[str, Any] = {"profile": "fair", "seed": 42}
+_net_prev_cfg: dict[str, Any] | None = None  # profile before simulated outage
+_net_history: deque[dict[str, Any]] = deque(maxlen=180)
+_net_sampler_stop = threading.Event()
+_net_sim = None
+
+
+def _load_default_collab() -> dict:
+    if DEFAULT_CFG.exists():
+        cfg = yaml.safe_load(DEFAULT_CFG.read_text(encoding="utf-8")) or {}
+        return dict(cfg.get("collab") or {})
+    return {}
+
+
+def _init_network_state() -> None:
+    global _net_cfg, _net_sim
+    collab = _load_default_collab()
+    _net_cfg = dict(collab.get("network") or {"profile": "fair", "seed": 42})
+    if "profile" not in _net_cfg:
+        _net_cfg["profile"] = "fair"
+    from src.network_sim import NetworkSimulator
+
+    _net_sim = NetworkSimulator.from_config(_net_cfg)
+
+
+def _network_snapshot() -> dict[str, Any]:
+    from src.network_sim import resolve_profile
+
+    with _net_lock:
+        cfg = dict(_net_cfg)
+    prof = resolve_profile(cfg)
+    d = prof.to_dict()
+    d["profile"] = prof.name
+    return d
+
+
+def _push_net_sample(sample: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Append one waveform point (jittered from current profile or upload outcome)."""
+    from src.network_sim import NetworkSimulator, resolve_profile
+
+    with _net_lock:
+        cfg = dict(_net_cfg)
+        sim = _net_sim
+    if sim is None:
+        sim = NetworkSimulator.from_config(cfg)
+    prof = resolve_profile(cfg)
+    if sample is None:
+        # probe with a small payload - accounts RTT/tx; loss may fail
+        out = sim.try_upload(int((_load_default_collab().get("upload_bytes_hard") or 80000)))
+        sample = {
+            "t": time.time(),
+            "profile": prof.name,
+            "rtt_ms": float(out.rtt_ms if out.ok or out.failed_reason == "timeout" else max(0.0, prof.rtt_ms)),
+            "tx_ms": float(out.tx_ms),
+            "bandwidth_mbps": float(prof.bandwidth_mbps),
+            "loss_prob": float(prof.loss_prob),
+            "timeout_ms": float(prof.timeout_ms),
+            "upload_ok": bool(out.ok),
+            "failed_reason": out.failed_reason,
+            "source": "probe",
+        }
+        # if loss dropped before measuring rtt, synthesize a visual sample from profile
+        if out.failed_reason == "loss" and out.rtt_ms == 0:
+            rng = np.random.default_rng()
+            sample["rtt_ms"] = float(max(0.0, rng.normal(prof.rtt_ms, max(1.0, prof.rtt_jitter_ms))))
+            sample["tx_ms"] = float((80000 * 8) / (max(1e-6, prof.bandwidth_mbps) * 1e6) * 1000)
+    else:
+        sample = dict(sample)
+        sample.setdefault("t", time.time())
+        sample.setdefault("profile", prof.name)
+    with _net_lock:
+        _net_history.append(sample)
+    return sample
+
+
+def _net_sampler_loop() -> None:
+    while not _net_sampler_stop.is_set():
+        try:
+            _push_net_sample()
+        except Exception:
+            pass
+        _net_sampler_stop.wait(0.75)
+
+
+@app.on_event("startup")
+def _on_startup() -> None:
+    _init_network_state()
+    t = threading.Thread(target=_net_sampler_loop, name="net-sampler", daemon=True)
+    t.start()
 
 
 def _read_json(path: Path) -> Any:
@@ -72,9 +171,9 @@ def load_summary() -> dict:
         "hybrid_lora_8b": h8.get("mean_S_f1"),
         "hybrid_lora_4b": h4.get("mean_S_f1"),
         "stack": {
-            "edge": "Anomalib PaDiM / resnet18",
+            "edge": "Qwen3.5-0.8B vision multi-layer patch gallery (PaDiM optional)",
             "cloud": "Qwen3-VL-8B + LoRA (also 4B LoRA available)",
-            "collab": "Hard-example upload (uncertain score band)",
+            "collab": "Qwen3.5 RouteAgent + network sim (good/fair/weak/outage)",
         },
     }
 
@@ -231,7 +330,7 @@ def build_viz_payload(category: str, image_path: str) -> dict[str, Any]:
     gt_mask = find_gt_mask(category, image_path)
     return {
         "edge_strip": _url_for_file(edge_viz),
-        # heavy Anomalib cloud (PatchCore) — NOT Qwen-VL; VLM has no heatmap
+        # heavy Anomalib cloud (PatchCore) - NOT Qwen-VL; VLM has no heatmap
         "cloud_strip": _url_for_file(cloud_viz),
         "gt_mask": _url_for_file(gt_mask),
         "legend": "Anomalib only (PaDiM/PatchCore). VLM outputs JSON, not heatmaps.",
@@ -268,6 +367,128 @@ def get_cloud_client():
             raise
 
 
+def get_route_agent():
+    """Lazy-load Qwen3.5 RouteAgent (full multimodal)."""
+    global _route_agent, _route_agent_error
+    if _route_agent is not None:
+        return _route_agent
+    with _route_agent_lock:
+        if _route_agent is not None:
+            return _route_agent
+        try:
+            from src.vlm.route_agent import RouteAgent
+
+            collab = _load_default_collab()
+            ra_cfg = dict(collab.get("route_agent") or {})
+            ra_cfg["device"] = os.environ.get("WEB_ROUTE_DEVICE", ra_cfg.get("device", "cuda:0"))
+            _route_agent = RouteAgent.from_config(ra_cfg)
+            _route_agent_error = None
+            return _route_agent
+        except Exception as exc:  # noqa: BLE001
+            _route_agent_error = str(exc)
+            raise
+
+
+def _run_route_decision(
+    *,
+    image_path: Path,
+    category: str,
+    edge: dict | None,
+    use_agent: bool,
+) -> dict[str, Any]:
+    """Decide upload via RouteAgent (or heuristic fallback) + network try_upload."""
+    from src.vlm.route_agent import RouteContext, heuristic_upload, resolve_network_profile
+
+    collab = _load_default_collab()
+    with _net_lock:
+        net_cfg = dict(_net_cfg)
+    profile, net = resolve_network_profile({"network": net_cfg})
+    score = float(edge["edge_score"]) if edge and edge.get("edge_score") is not None else 0.5
+    thr = float(edge["threshold"]) if edge and edge.get("threshold") is not None else 0.5
+    decision = str(edge.get("edge_pred") or ("NG" if score >= thr else "OK"))
+    hard_margin = float(collab.get("thr_margin") or 0.05)
+    n_gallery = int(collab.get("n_gallery_default") or 16)
+    ctx = RouteContext(
+        image=image_path,
+        category=category,
+        n_gallery=n_gallery,
+        edge_score=score,
+        edge_thr=thr,
+        edge_decision=decision,
+        network_profile=profile,
+        network=net,
+        hard_margin=hard_margin,
+    )
+
+    route_info: dict[str, Any]
+    if use_agent:
+        try:
+            agent = get_route_agent()
+            dec = agent.decide(ctx)
+            route_info = dec.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            upload = heuristic_upload(ctx)
+            route_info = {
+                "upload": upload,
+                "confidence": 0.0,
+                "reason": f"route_agent_unavailable ? heuristic: {exc}",
+                "source": "heuristic_fallback",
+                "parse_ok": False,
+                "latency_ms": 0.0,
+                "raw": "",
+                "network_profile": profile,
+            }
+    else:
+        upload = heuristic_upload(ctx)
+        route_info = {
+            "upload": upload,
+            "confidence": 1.0 if profile == "outage" else 0.6,
+            "reason": "heuristic (RouteAgent disabled)",
+            "source": "heuristic",
+            "parse_ok": True,
+            "latency_ms": 0.0,
+            "raw": "",
+            "network_profile": profile,
+        }
+
+    upload_want = bool(route_info.get("upload"))
+    net_outcome = None
+    path_type = "LOCAL"
+    if upload_want:
+        from src.network_sim import NetworkSimulator
+
+        with _net_lock:
+            sim = _net_sim or NetworkSimulator.from_config(net_cfg)
+        up_hard = int(collab.get("upload_bytes_hard") or 80000)
+        out = sim.try_upload(up_hard)
+        net_outcome = out.to_dict()
+        path_type = "CLOUD_REVIEW" if out.ok else "LOCAL_NET_FALLBACK"
+        _push_net_sample(
+            {
+                "t": time.time(),
+                "profile": profile,
+                "rtt_ms": float(out.rtt_ms),
+                "tx_ms": float(out.tx_ms),
+                "bandwidth_mbps": float(net.get("bandwidth_mbps") or 0),
+                "loss_prob": float(net.get("loss_prob") or 0),
+                "timeout_ms": float(net.get("timeout_ms") or 0),
+                "upload_ok": bool(out.ok),
+                "failed_reason": out.failed_reason,
+                "source": "demo_upload",
+            }
+        )
+    else:
+        path_type = "LOCAL"
+
+    return {
+        "route_agent": route_info,
+        "network": net,
+        "network_outcome": net_outcome,
+        "path_type": path_type,
+        "upload_want": upload_want,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -276,13 +497,157 @@ def index():
 
 @app.get("/api/health")
 def health():
+    snap = _network_snapshot()
     return {
         "ok": True,
         "cloud_loaded": _cloud_client is not None,
         "cloud_error": _cloud_error,
+        "route_agent_loaded": _route_agent is not None,
+        "route_agent_error": _route_agent_error,
+        "network_profile": snap.get("profile"),
         "data_root": str(DATA_ROOT),
         "cuda": os.environ.get("CUDA_VISIBLE_DEVICES"),
     }
+
+
+def _apply_network_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Replace live network config and rebuild simulator."""
+    global _net_sim
+    from src.network_sim import NetworkSimulator
+
+    with _net_lock:
+        _net_cfg.clear()
+        _net_cfg.update(cfg)
+        if "profile" not in _net_cfg:
+            _net_cfg["profile"] = "fair"
+        _net_sim = NetworkSimulator.from_config(_net_cfg)
+    sample = _push_net_sample()
+    return sample
+
+
+@app.get("/api/network")
+def api_network():
+    snap = _network_snapshot()
+    with _net_lock:
+        n = len(_net_history)
+        last = dict(_net_history[-1]) if _net_history else None
+        prev = dict(_net_prev_cfg) if _net_prev_cfg else None
+        disconnected = str(_net_cfg.get("profile") or "").lower() == "outage"
+    return {
+        "ok": True,
+        "network": snap,
+        "history_len": n,
+        "last_sample": last,
+        "disconnected": disconnected,
+        "restore_profile": (prev or {}).get("profile"),
+    }
+
+
+@app.get("/api/network/profiles")
+def api_network_profiles():
+    from src.network_sim import PROFILES
+
+    return {
+        "profiles": {k: v.to_dict() for k, v in PROFILES.items()},
+        "current": _network_snapshot(),
+    }
+
+
+@app.post("/api/network/profile")
+async def api_network_set_profile(
+    profile: str = Form(...),
+    rtt_ms: float | None = Form(None),
+    bandwidth_mbps: float | None = Form(None),
+    loss_prob: float | None = Form(None),
+    timeout_ms: float | None = Form(None),
+):
+    global _net_prev_cfg
+    from src.network_sim import PROFILES
+
+    name = str(profile).lower().strip()
+    if name not in PROFILES and name != "custom":
+        raise HTTPException(400, f"unknown profile: {name}; choose {list(PROFILES)}")
+    with _net_lock:
+        cfg = dict(_net_cfg)
+    cfg["profile"] = name
+    if rtt_ms is not None:
+        cfg["rtt_ms"] = float(rtt_ms)
+    if bandwidth_mbps is not None:
+        cfg["bandwidth_mbps"] = float(bandwidth_mbps)
+    if loss_prob is not None:
+        cfg["loss_prob"] = float(loss_prob)
+    if timeout_ms is not None:
+        cfg["timeout_ms"] = float(timeout_ms)
+    # manual profile change clears outage restore bookmark unless staying on outage
+    if name != "outage":
+        with _net_lock:
+            _net_prev_cfg = None
+    sample = _apply_network_cfg(cfg)
+    with _net_lock:
+        disconnected = str(_net_cfg.get("profile") or "").lower() == "outage"
+    return {
+        "ok": True,
+        "network": _network_snapshot(),
+        "sample": sample,
+        "disconnected": disconnected,
+    }
+
+
+@app.post("/api/network/disconnect")
+def api_network_disconnect():
+    """Simulate full outage; remember previous profile for restore."""
+    global _net_prev_cfg
+    with _net_lock:
+        cur = str(_net_cfg.get("profile") or "fair").lower()
+        if cur != "outage":
+            _net_prev_cfg = dict(_net_cfg)
+        cfg = dict(_net_cfg)
+    cfg["profile"] = "outage"
+    sample = _apply_network_cfg(cfg)
+    with _net_lock:
+        prev = dict(_net_prev_cfg) if _net_prev_cfg else None
+    return {
+        "ok": True,
+        "disconnected": True,
+        "network": _network_snapshot(),
+        "sample": sample,
+        "restore_profile": (prev or {}).get("profile") or "fair",
+    }
+
+
+@app.post("/api/network/restore")
+def api_network_restore():
+    """Restore network to the profile used before disconnect (default fair)."""
+    global _net_prev_cfg
+    with _net_lock:
+        prev = dict(_net_prev_cfg) if _net_prev_cfg else {"profile": "fair", "seed": 42}
+        _net_prev_cfg = None
+    if str(prev.get("profile") or "").lower() == "outage":
+        prev["profile"] = "fair"
+    sample = _apply_network_cfg(prev)
+    return {
+        "ok": True,
+        "disconnected": False,
+        "network": _network_snapshot(),
+        "sample": sample,
+        "restore_profile": None,
+    }
+
+
+@app.get("/api/network/timeseries")
+def api_network_timeseries(n: int = Query(120, ge=10, le=180)):
+    with _net_lock:
+        pts = list(_net_history)[-int(n) :]
+    return {"points": pts, "network": _network_snapshot()}
+
+
+@app.post("/api/route_agent/load")
+def api_route_agent_load():
+    try:
+        get_route_agent()
+        return {"ok": True, "loaded": True}
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
 
 
 @app.get("/api/summary")
@@ -382,10 +747,12 @@ async def api_demo(
     category: str = Form(...),
     image_path: str | None = Form(None),
     live_cloud: str = Form("false"),
+    use_route_agent: str = Form("true"),
     file: UploadFile | None = File(None),
 ):
-    """Demo one image: edge score (precomputed) + optional live LoRA cloud / cached case."""
+    """Demo: edge score -> RouteAgent + network sim -> optional live LoRA cloud."""
     live = str(live_cloud).lower() in {"1", "true", "yes", "on"}
+    use_agent = str(use_route_agent).lower() in {"1", "true", "yes", "on"}
     tmp_path = None
     if file is not None and file.filename:
         tmp_dir = ROOT / "outputs" / "web_uploads"
@@ -402,6 +769,9 @@ async def api_demo(
 
     edge = edge_lookup(category, image_path)
     cached = case_lookup_with_cloud(category, image_path)
+    route_pack = _run_route_decision(
+        image_path=p, category=category, edge=edge, use_agent=use_agent
+    )
 
     result: dict[str, Any] = {
         "category": category,
@@ -411,7 +781,11 @@ async def api_demo(
         "viz": build_viz_payload(category, image_path),
         "cached_case": None,
         "cloud_live": None,
-        "route": None,
+        "route": route_pack["path_type"],
+        "route_agent": route_pack["route_agent"],
+        "network": route_pack["network"],
+        "network_outcome": route_pack["network_outcome"],
+        "upload_want": route_pack["upload_want"],
         "final_decision": None,
     }
 
@@ -425,33 +799,46 @@ async def api_demo(
             "cloud": cached.get("cloud"),
         }
 
-    # routing preview from edge
-    hard = bool(edge.get("hard")) if edge else True
+    path_type = route_pack["path_type"]
+    # default final = edge; upgrade if cloud runs or cached cloud on same path
+    result["final_decision"] = (edge or {}).get("edge_pred") or (
+        cached.get("final_decision") if cached else None
+    )
+
     if not live:
-        if cached and cached.get("cloud"):
-            result["route"] = cached.get("path_type") or ("CLOUD_REVIEW" if hard else "LOCAL")
+        # offline: if agent wants cloud and we have cached cloud JSON, show it
+        if path_type == "CLOUD_REVIEW" and cached and cached.get("cloud"):
             result["final_decision"] = cached.get("final_decision")
-        elif edge:
-            result["route"] = "CLOUD_REVIEW" if hard else "LOCAL"
-            result["final_decision"] = edge.get("edge_pred")
+            result["cloud_live"] = {
+                **(cached.get("cloud") or {}),
+                "from_cache": True,
+            }
+        elif path_type != "CLOUD_REVIEW":
+            result["cloud_live"] = {
+                "skipped": True,
+                "reason": route_pack["route_agent"].get("reason") or "stay local",
+            }
         return result
 
-    # live cloud VLM
+    # live cloud VLM only when upload succeeded
+    if path_type != "CLOUD_REVIEW":
+        result["cloud_live"] = {
+            "skipped": True,
+            "reason": (
+                "network fallback - edge local"
+                if path_type == "LOCAL_NET_FALLBACK"
+                else route_pack["route_agent"].get("reason") or "RouteAgent: stay local"
+            ),
+        }
+        return result
+
     try:
         client = get_cloud_client()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(503, f"cloud model unavailable: {exc}") from exc
 
-    # only call cloud if hard or no edge info
-    if edge and not hard:
-        result["route"] = "LOCAL"
-        result["final_decision"] = edge.get("edge_pred")
-        result["cloud_live"] = {"skipped": True, "reason": "edge confident / not hard"}
-        return result
-
     vlm = client.infer(p)
     result["cloud_live"] = vlm.to_dict()
-    result["route"] = "CLOUD_REVIEW"
     result["final_decision"] = vlm.decision
     return result
 

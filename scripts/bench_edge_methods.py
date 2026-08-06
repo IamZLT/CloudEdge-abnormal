@@ -191,7 +191,12 @@ def run_padim(categories: list[str], data_root: Path, anomalib_root: Path, devic
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--methods", nargs="+", default=["all"], help="clip dinov3 qwen35 padim all")
+    ap.add_argument(
+        "--methods",
+        nargs="+",
+        default=["qwen35"],
+        help="default: qwen35 (edge default); also clip dinov3 padim all",
+    )
     ap.add_argument("--categories", nargs="+", default=["bottle", "screw"])
     ap.add_argument("--data-root", default=str(ROOT / "datasets" / "mvtec"))
     ap.add_argument("--anomalib-root", default=str(ROOT / "outputs" / "anomalib"))

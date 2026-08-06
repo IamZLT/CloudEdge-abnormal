@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 
 from src.metrics import binary_detection_metrics, latency_stats, retention
 from src.models import PatchCoreLite
+from src.network_sim import NetworkSimulator, apply_collab_uploads
 
 
 @dataclass
@@ -19,6 +20,8 @@ class CollabConfig:
     upload_bytes_hard: int = 80000
     upload_bytes_full: int = 350000
     weak_net_drop_ratio: float = 1.0
+    # network simulation (see src/network_sim.py); None → fair profile
+    network: dict | None = None
 
 
 def _collect_scores(model: PatchCoreLite, loader: DataLoader, device: torch.device):
@@ -99,19 +102,28 @@ def run_baselines(
     b1_lat = edge_lat
     b1_upload = 0
 
-    # S: edge default, hard -> cloud
-    s_scores = edge_scores.copy()
-    s_lat = list(edge_lat)
-    n_upload = int(hard_mask.sum())
-    for i, is_hard in enumerate(hard_mask):
-        if is_hard:
-            s_scores[i] = cloud_scores[i]
-            s_lat[i] = edge_lat[i] + cloud_lat[i] + collab.cloud_extra_latency_ms
-    s_upload = n_upload * collab.upload_bytes_hard
+    # S: edge default, hard -> cloud (subject to network sim)
+    n_hard = int(hard_mask.sum())
+    net_cfg = dict(collab.network or {})
+    if "profile" not in net_cfg:
+        net_cfg["profile"] = "fair"
+    sim = NetworkSimulator.from_config(net_cfg)
+    s_scores, s_lat, cloud_ok, net_outcomes = apply_collab_uploads(
+        hard_mask=hard_mask,
+        edge_scores=edge_scores,
+        cloud_scores=cloud_scores,
+        edge_lat_ms=edge_lat,
+        cloud_lat_ms=cloud_lat,
+        upload_bytes_hard=collab.upload_bytes_hard,
+        sim=sim,
+        legacy_extra_ms=0.0,  # RTT/tx already in network sim
+    )
+    n_upload_ok = int(cloud_ok.sum())
+    s_upload = n_upload_ok * collab.upload_bytes_hard
+    net_summary = sim.summarize(net_outcomes)
 
-    # weak-net: hard samples stay local (degraded)
-    weak_scores = edge_scores.copy()
-    weak_success = 1.0  # local decision always available
+    # weak-net / outage: every sample still gets an edge-local decision → service kept
+    weak_success = 1.0
     # conflict simulation: two edge scorings with small noise
     rng = np.random.default_rng(0)
     edge2 = edge_scores + rng.normal(0, float(np.std(edge_scores) * 0.05 + 1e-6), size=edge_scores.shape)
@@ -133,8 +145,8 @@ def run_baselines(
     cloud_det = binary_detection_metrics(labels, cloud_scores, cloud_thr)
     b0_det = binary_detection_metrics(labels, b0_scores, cloud_thr)
     b1_det = binary_detection_metrics(labels, b1_scores, edge_thr)
-    # for S use cloud thr on cloud-replaced scores is inconsistent; use fused: if hard use cloud thr else edge thr
-    s_preds = np.where(hard_mask, (s_scores >= cloud_thr).astype(int), (s_scores >= edge_thr).astype(int))
+    # S: cloud thr only where upload succeeded; else edge thr (incl. hard fallback)
+    s_preds = np.where(cloud_ok, (s_scores >= cloud_thr).astype(int), (s_scores >= edge_thr).astype(int))
     from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, roc_auc_score
 
     s_det = {
@@ -173,8 +185,10 @@ def run_baselines(
         "hard_mining": {
             "band_low": band_low,
             "band_high": band_high,
-            "n_hard": n_upload,
-            "hard_ratio": float(n_upload / max(1, len(labels))),
+            "n_hard": n_hard,
+            "hard_ratio": float(n_hard / max(1, len(labels))),
+            "n_cloud_upload_ok": n_upload_ok,
+            "cloud_upload_success_rate": net_summary.get("cloud_upload_success_rate"),
         },
         "models": {
             "edge": {"name": edge.cfg.name, "backbone": edge.cfg.backbone, "threshold": edge_thr, "mem_mb": edge_mem},
@@ -198,7 +212,8 @@ def run_baselines(
             "B1_upload_bytes": b1_upload,
             "S_upload_bytes": s_upload,
             "upload_reduce_vs_B0": float((b0_upload - s_upload) / max(1, b0_upload)),
-            "hard_upload_ratio": float(n_upload / max(1, len(labels))),
+            "hard_upload_ratio": float(n_hard / max(1, len(labels))),
+            "network": net_summary,
         },
         "contest_mapped": {
             "M1_capability_retention_auroc": ret_auroc,
@@ -207,6 +222,7 @@ def run_baselines(
             "M3_edge_peak_mem_mb": edge_mem,
             "M3_pass_leq_1536mb": bool(edge_mem <= 1536),
             "M4_weak_net_service_keep_rate": float(weak_success),
+            "M4_cloud_upload_success_rate": float(net_summary.get("cloud_upload_success_rate") or 0.0),
             "M5_mean_e2e_local_ms": s_local_lat["mean_ms"],
             "M5_mean_e2e_all_ms": s_lat_s["mean_ms"],
             "M5_pass_local_leq_200ms": bool(s_local_lat["mean_ms"] <= 200),

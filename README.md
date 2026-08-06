@@ -1,8 +1,8 @@
 # CloudEdge-abnormal
 
 
-**主路径**：边侧 Anomalib（PaDiM / ResNet18）快检 → 难例上云 → Qwen3-VL(+LoRA) JSON 复核。  
-**辅路径**：边侧多层 patch gallery（CLIP / DINOv3 / Qwen3.5-0.8B 视觉塔）与像素级对比。
+**主路径**：边侧 **Qwen3.5-0.8B** 视觉塔多层 patch gallery 快检 → 难例上云 → Qwen3-VL(+LoRA) JSON 复核。  
+**辅路径**：CLIP / DINOv3 gallery、Anomalib PaDiM（可选 OpenVINO 导出）与像素级对比。
 
 技术栈：Anomalib + OpenVINO/ONNX +（可选）KubeEdge/Sedna + MLflow + FastAPI Web。
 
@@ -22,7 +22,7 @@
 
 
 
-**选型**：精度上限 → DINOv3/CLIP-ML；边缘部署 / ≤1.5GB → **PaDiM-full** 或 Qwen-ML；PaDiM-16shot 仅作公平对照。
+**选型（默认边侧 = Qwen-ML）**：同族易与云端 Qwen-VL 对齐、峰值约 0.2GB；精度上限可换 DINOv3/CLIP-ML；极致轻量 / OpenVINO 可回退 PaDiM-full；PaDiM-16shot 仅作公平对照。
 
 #### 可视化样例
 
@@ -77,23 +77,52 @@ conda activate clip   # 或 base；需 transformers≥4.57 + safetensors
 ## Web 控制台
 
 ```bash
-conda activate base
+conda activate clip   # transformers>=5.3（RouteAgent）+ 原有 VLM
 cd /data2/zlt/code/CloudEdge-abnormal
-CUDA_VISIBLE_DEVICES=0 WEB_VLM_DEVICE=cuda:0 \
+CUDA_VISIBLE_DEVICES=0 WEB_VLM_DEVICE=cuda:0 WEB_ROUTE_DEVICE=cuda:0 \
   python -m uvicorn web.app:app --host 0.0.0.0 --port 7860
 ```
 
 浏览器：`http://<host>:7860`
 
 - 总览 / 指标：15 类 B1 / 零样本 / LoRA  
-- 协同演示：边侧分数 → 路由 → LLM JSON；Anomalib 热力图（PaDiM / PatchCore，非 VLM）  
+- **实时网络波形**：Demo 页顶部可选 `good/fair/weak/outage`，RTT/带宽/丢包滚动刷新  
+- 协同演示：边侧分数 → **Qwen3.5 RouteAgent** → 网络仿真 → 云端 LLM；Anomalib 热力图仅作对比  
 - LLM Cases：`hybrid_lora_8b` 难例复核  
 
-Demo 请选带 `[LLM]` 标记的样本；标记按 `缺陷类型/文件名` 精确匹配缓存。
+Demo 可勾选「Use Qwen3.5 RouteAgent」；首次建议点 **Preload RouteAgent**。带 `[LLM]` 标记的样本有云端缓存 JSON。
 
 ---
 
-## 边侧 Anomalib（主方法）
+## 边侧默认：Qwen3.5-0.8B（多层 patch）
+
+配置：`configs/edge_qwen35.yaml` / `configs/default.yaml`（`edge.method: qwen35`）。
+
+```bash
+conda activate clip   # transformers + safetensors
+CUDA_VISIBLE_DEVICES=0 python -m edge.infer \
+  --config configs/edge_qwen35.yaml \
+  --image datasets/mvtec/bottle/test/broken_large/000.png \
+  --category bottle
+# 可选：--method clip|dinov3|padim
+```
+
+统一协议：`train/good` → gallery（默认 16-shot）；`test/*` → 评测。  
+默认层：Qwen `[6,8,10,12]`（merger 前）；CLIP/DINO `[12,16,20,24]`；`--fusion-temp 0.5`。
+
+```bash
+# 像素指标 + 逐类对比图
+CUDA_VISIBLE_DEVICES=2 python scripts/bench_edge_pixel_viz.py \
+  --methods qwen35 --categories all --max-gallery 16 \
+  --fusion-temp 0.5 --tag mlpatch16_all15 --shard qwen --skip-viz
+# 对比 CLIP / DINOv3 / PaDiM 见 scripts/bench_edge_pixel_viz.py
+```
+
+核心代码：`edge/infer.py`、`edge/methods/encoders.py`、`patch_gallery_ad.py`。
+
+---
+
+## 边侧可选：Anomalib PaDiM
 
 ```bash
 conda activate dinov3
@@ -105,55 +134,47 @@ CUDA_VISIBLE_DEVICES=0 python scripts/train_anomalib.py \
 # B0 / B1 / S
 CUDA_VISIBLE_DEVICES=0 python scripts/bench_anomalib.py \
   --config configs/default.yaml --device cuda:0 --category all
-```
 
-产物：`outputs/anomalib/<cat>/`、`outputs/reports/mvtec_mean.md`。
+# 边云网络剖面（good/fair/weak/outage，时延记账 + 上云失败回退边侧）
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_network_profiles.py \
+  --config configs/default.yaml --device cuda:0 --category bottle
 
-### PaDiM 16-shot（与特征法公平对比）
-
-```bash
-conda activate dinov3
+# 16-shot 公平对照
 CUDA_VISIBLE_DEVICES=0 python scripts/bench_padim_kshot.py \
   --shots 16 --seed 42 --categories all --device cuda:0 --tag padim16shot
 ```
 
----
+网络剖面由 `collab.network.profile` 配置（`good|fair|weak|outage|custom`），实现见 `src/network_sim.py`。弱网时难例上云失败则边侧本地决策，`M4` 业务保持率计为 1.0，并另报 `cloud_upload_success_rate`。
 
-## 边侧多层 patch gallery（CLIP / DINOv3 / Qwen3.5）
-
-统一协议：`train/good` → gallery；`test/*` → 评测；默认 `--max-gallery 16`。  
-默认层：CLIP/DINO `[12,16,20,24]`，Qwen `[6,8,10,12]`；融合温度 `--fusion-temp 0.5`。
-
-```bash
-# 像素指标 + 逐类对比图（推荐）
-# dinov3 env: CLIP + DINOv3；clip env: Qwen
-CUDA_VISIBLE_DEVICES=1 python scripts/bench_edge_pixel_viz.py \
-  --methods clip dinov3 --categories all --max-gallery 16 \
-  --fusion-temp 0.5 --tag mlpatch16_all15 --shard clip_dino --skip-viz
-
-CUDA_VISIBLE_DEVICES=2 python scripts/bench_edge_pixel_viz.py \
-  --methods qwen35 --categories all --max-gallery 16 \
-  --fusion-temp 0.5 --tag mlpatch16_all15 --shard qwen --skip-viz
-
-# PaDiM（已有 ckpt 时）可并入同一 tag，或复用 maps/metrics 后：
-python scripts/bench_edge_pixel_viz.py --viz-only --categories all --tag mlpatch16_all15
-```
-
-可选：旧版图像级 CLS-gallery 脚本 `scripts/bench_edge_methods.py`。  
-核心代码：`edge/methods/encoders.py`、`patch_gallery_ad.py`、`pixel_metrics.py`、`viz_compare.py`。
+产物：`outputs/anomalib/<cat>/`、`outputs/reports/mvtec_mean.md`、`outputs/reports/network_sim/`。
 
 ---
 
-## 混合：边侧 Anomalib + 云端 Qwen-VL
+## 混合：边侧快检 + 云端 Qwen-VL
+
+默认边侧推理用 Qwen0.8B（`python -m edge.infer`）。下列 hybrid 脚本仍可复用已缓存的 Anomalib PaDiM 分数做离线路由评测。
 
 ```bash
-# 1) 导出边侧分数
+# 0) 在线边侧（默认 Qwen3.5-0.8B vision AD + Qwen3.5 RouteAgent 是否上云）
+# 需要 transformers>=5.3（clip 环境已升）；--no-route-agent 可关掉路由大脑
+conda activate clip
+CUDA_VISIBLE_DEVICES=0 python -m edge.infer \
+  --image datasets/mvtec/bottle/test/broken_large/000.png --category bottle
+CUDA_VISIBLE_DEVICES=0 python -m edge.infer \
+  --image datasets/mvtec/bottle/test/broken_large/000.png --category bottle \
+  --network-profile outage
+
+# 路由智能体剖面对比（heuristic vs RouteAgent × good/fair/weak/outage）
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_route_agent.py \
+  --config configs/default.yaml --category bottle --max-samples 24
+
+# 1) 导出边侧分数（Anomalib PaDiM 缓存，可选）
 conda activate dinov3
 CUDA_VISIBLE_DEVICES=0 python scripts/export_edge_scores.py \
   --config configs/hybrid.yaml --category bottle
 
-# 2) 零样本 / LoRA 云端复核
-conda activate base
+# 2) 零样本 / LoRA 云端复核（hybrid 可启用 collab.route_agent + network 仿真）
+conda activate clip   # 或 base
 CUDA_VISIBLE_DEVICES=0 python scripts/bench_hybrid.py \
   --config configs/hybrid.yaml --category bottle
 
@@ -187,6 +208,8 @@ configs/                 # default / hybrid / hybrid_lora* / qwen_vl*
 scripts/
   train_anomalib.py      # 边/云 Anomalib 训练
   bench_anomalib.py      # B0/B1/S
+  bench_network_profiles.py # 弱网剖面对比（good/fair/weak/outage）
+  bench_route_agent.py   # Qwen3.5 上云路由智能体对比
   bench_edge_pixel_viz.py # 多层 patch + 像素指标 + 对比可视化
   bench_edge_methods.py  # 旧版 CLS-gallery 对比
   bench_padim_kshot.py   # PaDiM k-shot
@@ -197,7 +220,7 @@ edge/
   infer.py / vlm_infer.py
 cloud/                   # 云端复核
 web/                     # FastAPI 控制台
-src/vlm/                 # Qwen-VL 客户端 / 路由
+src/vlm/                 # Qwen-VL 客户端 / Qwen3.5 RouteAgent / 路由
 models/                  # open_clip / dino 工具（辅助）
 asserts/edge_mlpatch/    # README 用可视化样例（jpg）
 outputs/reports/         # 汇总指标
@@ -210,8 +233,7 @@ datasets/mvtec           # 数据软链
 
 ## 说明
 
-- 少样本图像/像素精度：多层 patch gallery（DINOv3/CLIP）高于全量 PaDiM；边缘部署仍主推 **PaDiM-full**（~0.19GB）。  
-- Qwen 视觉塔与云端 Qwen-VL 同族，适合边云特征对齐，但 ViT-L 类显存更高。  
+- **默认边侧 = Qwen3.5-0.8B ML-patch**（轻量、与云端同族）；DINOv3/CLIP 精度更高但显存更大；PaDiM-full 仍可作极致轻量备选（~0.19GB）。  
 - VLM **不出热力图**；Web 上 Cloud PatchCore 条带仅为传统 AD 对比。  
 - 内存 / 时延以目标边缘硬件（OpenVINO 等）复测为准；桌面 GPU 数字仅作开发参考。  
 - KubeEdge 真集群不阻塞本阶段指标；难例路由先验证协同收益。
