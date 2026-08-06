@@ -1,14 +1,63 @@
 # CloudEdge-abnormal
 
-首选技术栈：
+云边协同工业缺陷检测（挑战杯 / XH-202606）。
 
-**Anomalib + OpenVINO/ONNX Runtime + KubeEdge（可选 Sedna 联合推理范式）+ MLflow + CVAT**
+**主路径**：边侧 Anomalib（PaDiM / ResNet18）快检 → 难例上云 → Qwen3-VL(+LoRA) JSON 复核。  
+**辅路径**：边侧特征 gallery 对比（CLIP / DINOv3 / Qwen3.5-0.8B 视觉塔）与资源指标评测。
 
-当前阶段目标：用 Anomalib 在本地数据上训练边侧/云端模型，导出边缘运行时，并给出 B0/B1/S 指标。
+技术栈：Anomalib + OpenVINO/ONNX +（可选）KubeEdge/Sedna + MLflow + FastAPI Web。
+
+## 当前结论（MVTec-15）
+
+### 边侧方法对比（16-shot gallery / PaDiM 全量 good）
+
+| Method | Image-AUROC | F1 | GFLOPs | Peak Mem | ≤1.5GB? |
+|--------|-------------|----|--------|----------|---------|
+| **PaDiM ResNet18（全量 good）** | **0.9145** | **0.9289** | **1.8** | **0.19 GB** | YES |
+| DINOv3 ViT-L/16 gallery | 0.9013 | 0.9141 | 60.9 | 1.15 GB | YES |
+| CLIP ViT-L/14 gallery | 0.8834 | 0.9108 | 77.8 | 1.16 GB | YES |
+| Qwen3.5-0.8B vision gallery | 0.8714 | 0.9039 | ~17.5@224 | 0.30 GB | YES |
+| PaDiM 16-shot（公平对比） | 0.8164 | 0.8969 | 1.8 | — | YES |
+
+- 协议：特征法 gallery 仅用 `train/good`（16-shot，seed=42）；测试仅用 `test/*`，无泄漏。  
+- 赛题 **≤1.5GB** = 单次推理**峰值内存**（非 FLOPs）。  
+- 详细表：`outputs/reports/edge_methods/edge_methods_16shot_all15.md`、`edge_methods_memory.md`、`edge_methods_padim_full_vs_16shot.md`。
+
+### 混合协同（边侧 PaDiM + 云端 VLM LoRA）
+
+| Scheme | Mean F1 (15 类) |
+|--------|-----------------|
+| B1 边侧-only | 0.9285 |
+| Zero-shot Qwen3-VL-8B | 0.8898 |
+| LoRA 4B | 0.9255 |
+| LoRA 8B | 0.9261 |
+
+报告：`outputs/hybrid_lora_8b/all_categories.md`、`outputs/reports/mvtec_mean.md`。
+
+---
+
+## 环境
+
+```bash
+# Anomalib / PaDiM / DINOv3 AD
+conda activate dinov3
+
+# Web / Qwen3-VL / Qwen3.5 vision / CLIP
+conda activate base   # transformers≥4.57（Qwen3VL）
+```
+
+权重默认在 `/data2/zlt/anomaly_detection_llm/model_card/`：
+
+- `clip-vit-large-patch14`
+- `dinov3-vitl16-pretrain-lvd1689m`
+- `Qwen3.5-0.8B`（仅用视觉塔）
+- `Qwen3-VL-4B-Instruct` / `Qwen3-VL-8B-Instruct`
+
+数据：`datasets/mvtec` → MVTec-AD。
+
+---
 
 ## Web 控制台
-
-可视化总览指标、协同演示、云端 LLM 案例：
 
 ```bash
 conda activate base
@@ -17,131 +66,133 @@ CUDA_VISIBLE_DEVICES=0 WEB_VLM_DEVICE=cuda:0 \
   python -m uvicorn web.app:app --host 0.0.0.0 --port 7860
 ```
 
-浏览器打开：`http://<host>:7860`
+浏览器：`http://<host>:7860`
 
-- **总览 / 指标**：15 类 B1 / 零样本 / LoRA 对比  
-- **协同演示**：边侧分数 → 是否上云 → LLM JSON（可实时 LoRA）  
-- **LLM 案例**：浏览 `hybrid_lora_8b` 难例复核结果  
+- 总览 / 指标：15 类 B1 / 零样本 / LoRA  
+- 协同演示：边侧分数 → 路由 → LLM JSON；Anomalib 热力图（PaDiM / PatchCore，非 VLM）  
+- LLM Cases：`hybrid_lora_8b` 难例复核  
 
-## 环境
+Demo 请选带 `[LLM]` 标记的样本；标记按 `缺陷类型/文件名` 精确匹配缓存。
+
+---
+
+## 边侧 Anomalib（主方法）
 
 ```bash
 conda activate dinov3
-# 已安装 anomalib / openvino / onnxruntime / mlflow
-# Web / Qwen-VL：conda activate base
-```
-## 一键流程
 
-```bash
-# 1) 训练边侧 PaDiM(ResNet18) + 云端 PatchCore(WRN50)
+# 训练边侧 PaDiM + 云端 PatchCore
 CUDA_VISIBLE_DEVICES=0 python scripts/train_anomalib.py \
-  --config configs/default.yaml --device cuda:0 --category bottle
+  --config configs/default.yaml --device cuda:0 --category all --no-export --skip-existing
 
-# 2) 评测 B0(全上云) / B1(仅边侧) / S(难例上云)
+# B0 / B1 / S
 CUDA_VISIBLE_DEVICES=0 python scripts/bench_anomalib.py \
-  --config configs/default.yaml --device cuda:0 --category bottle
+  --config configs/default.yaml --device cuda:0 --category all
 ```
 
-输出：
+产物：`outputs/anomalib/<cat>/`、`outputs/reports/mvtec_mean.md`。
 
-- `outputs/anomalib/bottle/...` 训练与导出产物
-- `outputs/reports/bottle/metrics.md` 指标报告
-- `outputs/mlruns/` MLflow 记录（若启用）
-
-## Qwen-VL 云边协同（可选）
-
-边侧小模型 **Qwen3-VL-4B**，云端大模型 **Qwen3-VL-8B**；难例（低置信）上云复核。
+### PaDiM 16-shot（与特征法公平对比）
 
 ```bash
-conda activate base   # 需要 transformers>=4.57（含 Qwen3VL）
-
-# 单图：边侧
-CUDA_VISIBLE_DEVICES=0 python edge/vlm_infer.py \
-  --config configs/qwen_vl.yaml \
-  --image datasets/mvtec/bottle/test/broken_large/000.png
-
-# 单图：云端
-CUDA_VISIBLE_DEVICES=1 python cloud/vlm_review.py \
-  --config configs/qwen_vl.yaml \
-  --image datasets/mvtec/bottle/test/broken_large/000.png
-
-# 小样本 B0/B1/S 对比（默认 bottle 最多 20 张）
-CUDA_VISIBLE_DEVICES=0,1 python scripts/bench_qwen_vl.py \
-  --config configs/qwen_vl.yaml --category bottle --max-images 8
-```
-
-权重默认路径见 `configs/qwen_vl.yaml`（本机 `anomaly_detection_llm/model_card/`）。
-
-## 混合：边侧 Anomalib + 云端大模型（推荐叙事）
-
-边侧 PaDiM 快检给分数；难例上云由 **Qwen3-VL-8B** 直接推理并输出 LLM JSON（decision/reason）。
-
-```bash
-# 1) 导出边侧分数（dinov3）
 conda activate dinov3
-CUDA_VISIBLE_DEVICES=0 python scripts/export_edge_scores.py --config configs/hybrid.yaml --category bottle
-
-# 2) 云端大模型复核难例（base）
-conda activate base
-CUDA_VISIBLE_DEVICES=0 python scripts/bench_hybrid.py --config configs/hybrid.yaml --category bottle
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_padim_kshot.py \
+  --shots 16 --seed 42 --categories all --device cuda:0 --tag padim16shot
 ```
 
-输出：`outputs/hybrid/<category>/bench.md`、`llm_outputs.md`（含云端 LLM 原文）。
+---
 
-## Qwen-VL LoRA 微调（OK/NG JSON）
+## 边侧特征 gallery 对比（CLIP / DINOv3 / Qwen3.5）
 
-在 holdout 划分上微调边/云 VLM，对比零样本：
+统一协议：`train/good` → gallery；`test/*` → 评测；可选 `--max-gallery 16`。
 
 ```bash
+# CLIP / Qwen（base）
 conda activate base
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_edge_methods.py \
+  --methods clip --categories all --max-gallery 16 --device cuda:0 --tag clip16all
 
-# 1) 构建 SFT 数据（train/good + 部分 test；另留 holdout）
-python scripts/build_vlm_sft_data.py --config configs/qwen_vl_lora.yaml
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_edge_methods.py \
+  --methods qwen35 --categories all --max-gallery 16 --device cuda:0 --tag qwen16all
 
-# 2) LoRA 微调（默认 Qwen3-VL-4B）
-CUDA_VISIBLE_DEVICES=3 python scripts/train_qwen_vl_lora.py --config configs/qwen_vl_lora.yaml
+# DINOv3 / 现成 PaDiM ckpt（dinov3）
+conda activate dinov3
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_edge_methods.py \
+  --methods dinov3 --categories all --max-gallery 16 --device cuda:0 --tag dino16all
 
-# 3) holdout 上对比 zero-shot vs LoRA
-CUDA_VISIBLE_DEVICES=3 python scripts/eval_qwen_vl_lora.py --config configs/qwen_vl_lora.yaml --max-images 60
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_edge_methods.py \
+  --methods padim --categories all --device cuda:0 --tag padim16all
 ```
 
-产物：`outputs/qwen_vl_lora/adapter/`、`eval_holdout.md`。
+核心代码：`edge/methods/`（`gallery_ad.py`、`encoders.py`、`padim_ad.py`）。
 
-### 接入混合协同（边侧 Anomalib + 云端 LoRA VLM）
+---
+
+## 混合：边侧 Anomalib + 云端 Qwen-VL
 
 ```bash
-conda activate base
-# 4B LoRA
-CUDA_VISIBLE_DEVICES=0 python scripts/bench_hybrid_multi.py \
-  --config configs/hybrid_lora.yaml \
-  --categories screw,cable,pill,capsule,zipper \
-  --max-cloud-reviews 16 --device cuda:0
+# 1) 导出边侧分数
+conda activate dinov3
+CUDA_VISIBLE_DEVICES=0 python scripts/export_edge_scores.py \
+  --config configs/hybrid.yaml --category bottle
 
-# 8B LoRA（云端大模型）
-python scripts/train_qwen_vl_lora.py --config configs/qwen_vl_lora_8b.yaml
+# 2) 零样本 / LoRA 云端复核
+conda activate base
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_hybrid.py \
+  --config configs/hybrid.yaml --category bottle
+
 CUDA_VISIBLE_DEVICES=0 python scripts/bench_hybrid_multi.py \
   --config configs/hybrid_lora_8b.yaml \
-  --categories screw,cable,pill,capsule,zipper \
-  --max-cloud-reviews 16 --device cuda:0
+  --categories bottle,screw,cable --max-cloud-reviews 16 --device cuda:0
 ```
+
+### LoRA 微调（OK/NG JSON）
+
+```bash
+conda activate base
+python scripts/build_vlm_sft_data.py --config configs/qwen_vl_lora.yaml
+CUDA_VISIBLE_DEVICES=0 python scripts/train_qwen_vl_lora.py --config configs/qwen_vl_lora.yaml
+CUDA_VISIBLE_DEVICES=0 python scripts/eval_qwen_vl_lora.py --config configs/qwen_vl_lora.yaml --max-images 60
+
+# 8B
+python scripts/train_qwen_vl_lora.py --config configs/qwen_vl_lora_8b.yaml
+```
+
+产物：`outputs/qwen_vl_lora*/adapter/`、`outputs/hybrid_lora*/`。
+
+可选双 VLM（边 4B / 云 8B）：`configs/qwen_vl.yaml` + `scripts/bench_qwen_vl.py`（**非**当前 hybrid 主路径）。
+
+---
 
 ## 目录
 
 ```text
-configs/                 # default.yaml + qwen_vl.yaml
-scripts/train_anomalib.py
-scripts/bench_anomalib.py
-scripts/bench_qwen_vl.py # Qwen-VL 协同评测
-src/vlm/                 # Qwen-VL 客户端 / 解析 / 路由
-edge/vlm_infer.py        # 边侧 VLM
-cloud/vlm_review.py      # 云端 VLM
-deploy/kubeedge/         # KubeEdge/Sedna 骨架说明
-docs/                    # 方案与任务分配
-datasets/                # MVTec 等数据软链
+configs/                 # default / hybrid / hybrid_lora* / qwen_vl*
+scripts/
+  train_anomalib.py      # 边/云 Anomalib 训练
+  bench_anomalib.py      # B0/B1/S
+  bench_edge_methods.py  # CLIP/DINOv3/Qwen/PaDiM 对比
+  bench_padim_kshot.py   # PaDiM k-shot
+  export_edge_scores.py / bench_hybrid*.py
+  train_qwen_vl_lora.py / eval_qwen_vl_lora.py
+edge/
+  methods/               # gallery AD + encoders
+  infer.py / vlm_infer.py
+cloud/                   # 云端复核
+web/                     # FastAPI 控制台
+src/vlm/                 # Qwen-VL 客户端 / 路由
+models/                  # open_clip / dino 工具（辅助）
+docs/                    # 方案与指标清单
+outputs/reports/         # 汇总指标
+deploy/kubeedge/         # 部署骨架
+datasets/mvtec           # 数据软链
 ```
+
+---
 
 ## 说明
 
-- KubeEdge 真集群部署不阻塞本阶段指标；先用 Sedna 风格难例路由验证协同收益。
-- 旧的自研 `src/models.py` PatchCore-lite 仅作兜底，**视觉主路径以 Anomalib 为准**。
-- Qwen-VL 路径用于对齐赛题「云端大模型 / 边侧轻量大模型」叙事，与 Anomalib 可并行。
+- 边侧主推 **PaDiM + 全量正常样本**；特征 gallery 适合少样本叙事，但同 16-shot 下仍弱于全量 PaDiM。  
+- VLM **不出热力图**；Web 上 Cloud PatchCore 条带仅为传统 AD 对比。  
+- 内存 / 时延以目标边缘硬件（OpenVINO 等）复测为准；桌面 GPU 数字仅作开发参考。  
+- KubeEdge 真集群不阻塞本阶段指标；难例路由先验证协同收益。
