@@ -9,19 +9,22 @@
 
 ## 当前结论（MVTec-15）
 
-### 边侧方法对比（16-shot gallery / PaDiM 全量 good）
+### 边侧方法对比（16-shot + 像素级）
 
-| Method | Image-AUROC | F1 | GFLOPs | Peak Mem | ≤1.5GB? |
-|--------|-------------|----|--------|----------|---------|
-| **PaDiM ResNet18（全量 good）** | **0.9145** | **0.9289** | **1.8** | **0.19 GB** | YES |
-| DINOv3 ViT-L/16 gallery | 0.9013 | 0.9141 | 60.9 | 1.15 GB | YES |
-| CLIP ViT-L/14 gallery | 0.8834 | 0.9108 | 77.8 | 1.16 GB | YES |
-| Qwen3.5-0.8B vision gallery | 0.8714 | 0.9039 | ~17.5@224 | 0.30 GB | YES |
-| PaDiM 16-shot（公平对比） | 0.8164 | 0.8969 | 1.8 | — | YES |
+特征法改为 **patch-token NN → anomaly map**（图像分 = map max）；像素指标在 256×256。
 
-- 协议：特征法 gallery 仅用 `train/good`（16-shot，seed=42）；测试仅用 `test/*`，无泄漏。  
-- 赛题 **≤1.5GB** = 单次推理**峰值内存**（非 FLOPs）。  
-- 详细表：`outputs/reports/edge_methods/edge_methods_16shot_all15.md`、`edge_methods_memory.md`、`edge_methods_padim_full_vs_16shot.md`。
+| Method | Image-AUROC | Pixel-AUROC | Pixel-F1 | Peak MB |
+|--------|-------------|-------------|----------|---------|
+| **DINOv3 ViT-L/16 patch** | **0.9479** | 0.9437 | **0.5201** | 2332 |
+| CLIP ViT-L/14 patch | 0.9397 | 0.9382 | 0.4488 | 1184 |
+| PaDiM ResNet18（全量 good） | 0.9145 | **0.9666** | 0.5003 | 193 |
+| PaDiM 16-shot | 0.8164 | 0.9391 | 0.4389 | 193 |
+| Qwen3.5-0.8B vision patch | 0.8568 | 0.8408 | 0.2174 | 215 |
+
+- 协议：gallery = `train/good` 16-shot（seed=42）；评测仅 `test/*`。  
+- 逐类 2–3 张横向对比图：`outputs/reports/edge_methods/viz/pixel16_all15/`  
+- 完整表：`outputs/reports/edge_methods/edge_pixel_pixel16_all15.md`  
+- 旧版 CLS-gallery / 内存表：`edge_methods_16shot_all15.md`、`edge_methods_memory.md`
 
 ### 混合协同（边侧 PaDiM + 云端 VLM LoRA）
 
@@ -124,7 +127,19 @@ CUDA_VISIBLE_DEVICES=0 python scripts/bench_edge_methods.py \
   --methods padim --categories all --device cuda:0 --tag padim16all
 ```
 
-核心代码：`edge/methods/`（`gallery_ad.py`、`encoders.py`、`padim_ad.py`）。
+像素级指标 + 逐类对比可视化（patch map / PaDiM map）：
+
+```bash
+# dinov3 env: CLIP + DINOv3 + PaDiM；clip env: Qwen
+CUDA_VISIBLE_DEVICES=1 python scripts/bench_edge_pixel_viz.py \
+  --methods clip dinov3 padim_16shot padim --categories all --max-gallery 16 --tag pixel16_all15 --shard main
+CUDA_VISIBLE_DEVICES=2 python scripts/bench_edge_pixel_viz.py \
+  --methods qwen35 --categories all --max-gallery 16 --tag pixel16_all15 --shard qwen --skip-viz
+# 合并报告并出图
+python scripts/bench_edge_pixel_viz.py --viz-only --categories all --tag pixel16_all15
+```
+
+核心代码：`edge/methods/`（`patch_gallery_ad.py`、`pixel_metrics.py`、`viz_compare.py`）。
 
 ---
 

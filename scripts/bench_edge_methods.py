@@ -69,8 +69,8 @@ def _write_reports(rows: list[dict], out_dir: Path, tag: str) -> None:
         "",
         "## Mean over categories",
         "",
-        "| Method | Image-AUROC | F1 | Prec | Rec | Latency ms | GFLOPs | Params M | Peak MB |",
-        "|--------|-------------|----|------|-----|------------|--------|----------|---------|",
+        "| Method | Image-AUROC | Pixel-AUROC | Pixel-F1 | F1 | Prec | Rec | Latency ms | GFLOPs | Params M | Peak MB |",
+        "|--------|-------------|-------------|----------|----|------|-----|------------|--------|----------|---------|",
     ]
     for m in methods:
         sub = [r for r in rows if r["method"] == m]
@@ -79,7 +79,8 @@ def _write_reports(rows: list[dict], out_dir: Path, tag: str) -> None:
             return float(np.mean(vals)) if vals else float("nan")
 
         lines.append(
-            f"| {m} | {avg('image_auroc'):.4f} | {avg('f1'):.4f} | {avg('precision'):.4f} | "
+            f"| {m} | {avg('image_auroc'):.4f} | {avg('pixel_auroc'):.4f} | {avg('pixel_f1'):.4f} | "
+            f"{avg('f1'):.4f} | {avg('precision'):.4f} | "
             f"{avg('recall'):.4f} | {avg('infer_latency_ms_mean'):.2f} | "
             f"{avg('flops_g'):.3f} | {avg('params_m'):.1f} | {avg('peak_mem_mb'):.0f} |"
         )
@@ -127,13 +128,17 @@ def run_feature_method(
     from edge.methods.encoders import load_clip_encoder, load_dinov3_encoder, load_qwen35_vision_encoder
 
     if method == "clip":
-        encode, meta = load_clip_encoder(DEFAULT_PATHS["clip"], device=device, image_size=image_size)
+        encode, _encode_patches, meta = load_clip_encoder(
+            DEFAULT_PATHS["clip"], device=device, image_size=image_size
+        )
         name = "clip_vitl14_gallery"
     elif method == "dinov3":
-        encode, meta = load_dinov3_encoder(DEFAULT_PATHS["dinov3"], device=device, image_size=image_size)
+        encode, _encode_patches, meta = load_dinov3_encoder(
+            DEFAULT_PATHS["dinov3"], device=device, image_size=image_size
+        )
         name = "dinov3_vitl16_gallery"
     elif method == "qwen35":
-        encode, meta = load_qwen35_vision_encoder(
+        encode, _encode_patches, meta = load_qwen35_vision_encoder(
             DEFAULT_PATHS["qwen35"], device=device, max_pixels=image_size * image_size
         )
         name = "qwen35_0.8b_vision_gallery"

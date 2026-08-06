@@ -38,6 +38,11 @@ class MethodResult:
     peak_mem_mb: float | None
     notes: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
+    pixel_auroc: float | None = None
+    pixel_f1: float | None = None
+    pixel_precision: float | None = None
+    pixel_recall: float | None = None
+    pixel_threshold: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
