@@ -129,6 +129,18 @@ AD **只加载视觉塔**；mmproj 为 F16，与 HF 视觉权重近 bit-exact �
 conda activate clip          # 必须；base 没有 llama_cpp
 CUDA_VISIBLE_DEVICES=0 WEB_VLM_DEVICE=cuda:0 WEB_ROUTE_DEVICE=cuda:0 \
   python -m uvicorn web.app:app --host 0.0.0.0 --port 7860
+# 等价：python -m web
+```
+
+包结构（便于扩展，入口仍是 `web.app:app`）：
+
+```text
+web/
+  app.py           # FastAPI factory
+  config.py        # 路径 / yaml
+  api/             # HTTP 路由（health / fleet / network / catalog / demo …）
+  services/        # 业务逻辑（fleet / models / catalog / demo）
+  static/          # 前端
 ```
 
 | 环境变量 | 含义 |
@@ -137,10 +149,11 @@ CUDA_VISIBLE_DEVICES=0 WEB_VLM_DEVICE=cuda:0 WEB_ROUTE_DEVICE=cuda:0 \
 | `WEB_ROUTE_BACKEND` | `gguf`（默认）或 `hf` |
 | `WEB_ROUTE_GGUF_DIR` | 量化包目录（可选覆盖） |
 | `WEB_VLM_DEVICE` | 云端 LoRA 设备 |
+| `WEB_PRELOAD` | 启动时预加载模型（默认 `1`） |
 
 - 页面：**Overview** · **Topology**（云边远近 + 链路实时 RTT/带宽/丢包）· **Node Demo**（单节点案例）  
 - Topology 按地理距离排布边缘；Demo 绑定所选节点的物理链路  
-- 建议先点 **Preload RouteAgent (Q4)**  
+- 云边路由策略：`collab.route_policy`（`cost_risk` / `baseline`），见 `src/collab_routing/`  
 
 默认配置：`collab.route_agent.backend: gguf`，`vision_mode: text`；`network_env.enabled: true`。
 

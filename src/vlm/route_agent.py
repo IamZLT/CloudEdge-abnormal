@@ -41,12 +41,12 @@ When no image is attached, rely entirely on CONTEXT numbers and rules.
 Reply with ONLY one JSON object (no markdown):
 {"upload": true or false, "confidence": float 0-1, "reason": "short English"}
 
-Rules (priority order):
+Rules (priority order; aligned with Cost–Risk Routing / CRR):
 1. If network_profile is outage or link is unavailable → upload=false.
-2. If n_gallery==0 (cold start, no local normals) and network is usable → upload=true.
-3. If n_gallery>0 and local decision is confident (score far from threshold) → upload=false.
-4. If n_gallery>0 but uncertain (near threshold / low confidence) → upload=true.
-5. Prefer local when the edge score is clearly OK or clearly NG.
+2. If n_gallery==0 (cold start) and network is usable → prefer upload=true.
+3. Prefer upload when uncertain (score near threshold) AND the link cost is acceptable.
+4. Prefer local when score is far from threshold (confident) OR the link is very weak.
+5. Prefer local when the edge score is clearly OK or clearly NG on a usable link.
 """
 
 
@@ -166,12 +166,15 @@ def parse_route_json(text: str) -> dict[str, Any]:
 
 
 def heuristic_upload(ctx: RouteContext) -> bool:
-    """Fallback: near-threshold or empty gallery → upload when network usable."""
-    if str(ctx.network_profile).lower() == "outage":
-        return False
-    if int(ctx.n_gallery) <= 0:
-        return True
-    return ctx.score_margin() < float(ctx.hard_margin)
+    """Rule-based upload decision via pluggable ``src.collab_routing`` policy.
+
+    Default policy is ``cost_risk`` (CRR). Set ``collab.route_policy: baseline``
+    to restore the legacy margin-only heuristic. Call
+    ``configure_routing(collab_cfg)`` at startup so the active policy is used.
+    """
+    from src.collab_routing import rule_upload
+
+    return rule_upload(ctx)
 
 
 def _resolve_gguf_paths(

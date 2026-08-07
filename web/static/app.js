@@ -30,6 +30,8 @@ function switchPanel(name) {
   if (name === "topology") {
     resizeTopoCanvas();
     pollTopology();
+    pollLive().catch(() => {});
+    ensureLiveAnim();
   }
   if (name === "demo") pollNetwork();
 }
@@ -169,6 +171,20 @@ const state = {
   hitRegions: [], // {id, x, y, r}
   localFile: null,
   localObjectUrl: null,
+  live: {
+    running: false,
+    pollTimer: null,
+    animTimer: null,
+    animT0: performance.now(),
+    status: null,
+    // nodeId -> {upload: bool, path: string, t: number}
+    linkPulse: {},
+    // track last rendered image per node to avoid flicker
+    cardSig: {},
+    // persistent cloud uplink cases: key -> job
+    cloudBoard: {},
+    cloudBoardOrder: [],
+  },
 };
 
 function resizeTopoCanvas() {
@@ -309,19 +325,90 @@ function drawTopology() {
   ctx.fillText(`≈${(maxDist * 0.25).toFixed(0)} km`, cx + 10, cy - (minR + Math.sqrt(0.25) * maxR));
   ctx.fillText(`≈${maxDist.toFixed(0)} km`, cx + 10, cy - (minR + maxR));
 
-  // links first (under nodes)
+  const now = Date.now();
+  const anim = ((performance.now() - state.live.animT0) / 1000) % 1;
+
+  // links first (under nodes) — glowing uplink beams when uploading
   for (const n of nodes) {
     const L = n.link;
     const col = linkQualityColor(L);
     const out = L.outage || L.profile === "outage";
+    const pulse = state.live.linkPulse[n.id];
+    const age = pulse ? (now - pulse.t) / 1000 : 99;
+    const activeUp = pulse && age < 5 && pulse.upload;
+    const path = pulse?.path || "LOCAL";
+
+    // soft glow under active uplink
+    if (activeUp && !out) {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(n.x, n.y);
+      ctx.strokeStyle =
+        path === "CLOUD_REVIEW"
+          ? "rgba(31,122,76,0.35)"
+          : path === "LOCAL_NET_FALLBACK"
+            ? "rgba(180,35,24,0.35)"
+            : "rgba(15,92,110,0.4)";
+      ctx.lineWidth = 14;
+      ctx.lineCap = "round";
+      ctx.stroke();
+    }
+
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.lineTo(n.x, n.y);
-    ctx.strokeStyle = out ? "rgba(180,35,24,0.55)" : col;
-    ctx.lineWidth = out ? 2 : 2.5;
+    ctx.strokeStyle = out
+      ? "rgba(180,35,24,0.55)"
+      : activeUp
+        ? path === "CLOUD_REVIEW"
+          ? "#1f7a4c"
+          : path === "LOCAL_NET_FALLBACK"
+            ? "#b42318"
+            : "#0f5c6e"
+        : col;
+    ctx.lineWidth = out ? 2 : activeUp ? 5.5 : 2.5;
     if (out) ctx.setLineDash([6, 5]);
+    else if (activeUp) ctx.setLineDash([10, 8]);
+    ctx.lineDashOffset = activeUp ? -anim * 36 : 0;
+    ctx.globalAlpha = out ? 0.85 : 1;
     ctx.stroke();
+    ctx.globalAlpha = 1;
     ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+    ctx.lineCap = "butt";
+
+    // traffic packets along cloud↔edge link (edge → cloud when upload)
+    if (!out && (activeUp || state.live.running)) {
+      const packets = activeUp ? 5 : 1;
+      for (let k = 0; k < packets; k++) {
+        const phase = (anim + k / packets) % 1;
+        const t = activeUp ? 1 - phase : phase * 0.28;
+        const px = n.x + (cx - n.x) * t;
+        const py = n.y + (cy - n.y) * t;
+        const r = activeUp ? 6 : 3;
+        ctx.beginPath();
+        ctx.arc(px, py, r + (activeUp ? 3 : 0), 0, Math.PI * 2);
+        ctx.fillStyle = activeUp ? "rgba(255,255,255,0.35)" : "rgba(15,92,110,0.12)";
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, Math.PI * 2);
+        ctx.fillStyle = activeUp
+          ? path === "CLOUD_REVIEW"
+            ? "#1f7a4c"
+            : path === "LOCAL_NET_FALLBACK"
+              ? "#b42318"
+              : "#0f5c6e"
+          : "rgba(15,92,110,0.4)";
+        ctx.fill();
+        if (activeUp) {
+          ctx.fillStyle = "#fff";
+          ctx.font = "700 8px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText("↑", px, py + 3);
+          ctx.textAlign = "left";
+        }
+      }
+    }
   }
 
   // link labels — along ray but offset perpendicular so they never sit on a nearer node
@@ -361,18 +448,36 @@ function drawTopology() {
     ctx.textAlign = "left";
   }
 
-  // cloud hub
+  // cloud hub + load ring (visualizes cloud concurrent capacity)
+  const cloudInfo = state.live.status?.cloud || state.fleet?.cloud || {};
+  const inflight = Number(cloudInfo.inflight || 0);
+  const maxIn = Math.max(1, Number(cloudInfo.max_inflight || 2));
+  const load = Math.min(1, inflight / maxIn);
   ctx.beginPath();
-  ctx.arc(cx, cy, 30, 0, Math.PI * 2);
+  ctx.arc(cx, cy, 38, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(15,92,110,0.15)";
+  ctx.lineWidth = 6;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx, cy, 38, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * load);
+  ctx.strokeStyle = load > 0.8 ? "#b42318" : "#0f5c6e";
+  ctx.lineWidth = 6;
+  ctx.lineCap = "round";
+  ctx.stroke();
+  const pulseR = 30 + (state.live.running ? Math.sin(performance.now() / 220) * 2 : 0);
+  ctx.beginPath();
+  ctx.arc(cx, cy, pulseR, 0, Math.PI * 2);
   ctx.fillStyle = "#0f5c6e";
   ctx.fill();
   ctx.fillStyle = "#fff";
-  ctx.font = "600 12px sans-serif";
+  ctx.font = "600 11px sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("CLOUD", cx, cy + 4);
+  ctx.fillText("CLOUD", cx, cy - 2);
+  ctx.font = "10px ui-monospace, monospace";
+  ctx.fillText(`${inflight}/${maxIn}`, cx, cy + 12);
   ctx.fillStyle = "#1b2430";
   ctx.font = "600 13px serif";
-  ctx.fillText(cloud?.city || cloud?.name || "Cloud", cx, cy + 48);
+  ctx.fillText(cloud?.city || cloud?.name || "Cloud", cx, cy + 56);
   ctx.textAlign = "left";
 
   // edge nodes (on top)
@@ -380,23 +485,47 @@ function drawTopology() {
     const selected = n.id === state.selectedEdgeId;
     const L = n.link;
     const out = L.outage || L.profile === "outage";
+    const last = state.live.status?.last_by_node?.[n.id];
+    const path = last?.path_type || "";
+    const pulse = state.live.linkPulse[n.id];
+    const age = pulse ? (now - pulse.t) / 1000 : 99;
+    const activeUp = pulse && age < 5 && pulse.upload;
+
     ctx.beginPath();
-    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+    ctx.arc(n.x, n.y, n.r + (activeUp ? 4 : 0), 0, Math.PI * 2);
     ctx.fillStyle = selected ? "#e6f2f4" : "#fff";
     ctx.fill();
-    ctx.lineWidth = selected ? 3 : 2;
-    ctx.strokeStyle = out ? "#b42318" : "#0f5c6e";
+    ctx.lineWidth = selected || activeUp ? 3.5 : 2;
+    ctx.strokeStyle = out
+      ? "#b42318"
+      : path === "CLOUD_REVIEW"
+        ? "#1f7a4c"
+        : path === "LOCAL_NET_FALLBACK"
+          ? "#b42318"
+          : "#0f5c6e";
     ctx.stroke();
     ctx.fillStyle = "#1b2430";
     ctx.font = "600 12px sans-serif";
     ctx.textAlign = "center";
-    // put city label outside radially so it never sits on the link toward cloud
-    const lx = n.x + Math.cos(n.angle) * (n.r + 14);
-    const ly = n.y + Math.sin(n.angle) * (n.r + 14);
+    const lx = n.x + Math.cos(n.angle) * (n.r + 16);
+    const ly = n.y + Math.sin(n.angle) * (n.r + 16);
     ctx.fillText(L.city || n.id, lx, ly);
     ctx.font = "10px ui-monospace, monospace";
     ctx.fillStyle = "#5b6775";
     ctx.fillText(`${Number(L.distance_geo_km).toFixed(0)} km`, lx, ly + 12);
+    if (path) {
+      const short =
+        path === "CLOUD_REVIEW" ? "→CLOUD" : path === "LOCAL_NET_FALLBACK" ? "FALLBACK" : "LOCAL";
+      ctx.fillStyle =
+        path === "CLOUD_REVIEW" ? "#1f7a4c" : path === "LOCAL_NET_FALLBACK" ? "#b42318" : "#5b6775";
+      ctx.font = "700 10px sans-serif";
+      ctx.fillText(short, lx, ly + 24);
+    }
+    if (last?.final) {
+      ctx.fillStyle = String(last.final).toUpperCase() === "NG" ? "#b42318" : "#1f7a4c";
+      ctx.font = "700 12px sans-serif";
+      ctx.fillText(String(last.final), n.x, n.y + 4);
+    }
     ctx.textAlign = "left";
     state.hitRegions.push({ id: n.id, x: n.x, y: n.y, r: n.r + 8 });
   }
@@ -511,6 +640,9 @@ async function pollTopology() {
     drawTopology();
     renderEdgeFleet(fleet);
     await fillEdgeNodeSelect(fleet);
+    // keep live image cards wired to fleet even before first tick
+    if (state.live.status) renderLiveNodeCards(state.live.status);
+    else renderLiveNodeCards({ last_by_node: {}, running: false });
   } catch {
     /* ignore */
   }
@@ -1046,6 +1178,414 @@ async function health() {
   }
 }
 
+/* ---------------- fleet live monitor (one-click) ---------------- */
+
+function ensureLiveAnim() {
+  if (state.live.animTimer) return;
+  const step = () => {
+    state.live.animTimer = requestAnimationFrame(step);
+    if ($("#panel-topology")?.classList.contains("active")) drawTopology();
+  };
+  state.live.animT0 = performance.now();
+  state.live.animTimer = requestAnimationFrame(step);
+}
+
+function pathBadgeClass(path) {
+  if (path === "CLOUD_REVIEW") return "cloud";
+  if (path === "LOCAL_NET_FALLBACK") return "fallback";
+  if (path === "LOCAL") return "local";
+  return "idle";
+}
+
+function pathShort(path) {
+  if (path === "CLOUD_REVIEW") return "→ 云端复核";
+  if (path === "LOCAL_NET_FALLBACK") return "链路回退";
+  if (path === "LOCAL") return "本地判决";
+  return "等待…";
+}
+
+function renderLiveNodeCards(st) {
+  const grid = $("#live-node-grid");
+  if (!grid) return;
+  const fleetNodes = state.fleet?.nodes || [];
+  const last = st?.last_by_node || {};
+  const order = fleetNodes.length
+    ? fleetNodes
+    : Object.keys(last).map((id) => ({ id, city: last[id]?.city, category: last[id]?.category }));
+
+  if (!order.length) {
+    grid.innerHTML = `<div class="hint" style="grid-column:1/-1">加载边缘节点后可显示三路画面</div>`;
+    return;
+  }
+
+  // rebuild structure once; update images in place to reduce flicker
+  const ids = order.map((n) => n.id);
+  const existing = [...grid.querySelectorAll(".live-node-card")].map((el) => el.dataset.nodeId);
+  const needRebuild =
+    existing.length !== ids.length || ids.some((id, i) => existing[i] !== id);
+
+  if (needRebuild) {
+    grid.innerHTML = order
+      .map((n) => {
+        return `<article class="live-node-card path-idle" data-node-id="${n.id}">
+          <div class="lnc-head">
+            <strong class="lnc-city">${n.city || n.id}</strong>
+            <span class="lnc-badge idle">等待…</span>
+          </div>
+          <div class="lnc-img-wrap">
+            <img alt="edge ${n.id}" style="display:none" />
+            <div class="lnc-placeholder">启动联调后显示测试图像</div>
+            <div class="lnc-overlay"></div>
+          </div>
+          <div class="lnc-body">
+            <div class="lnc-file">—</div>
+            <div class="lnc-reason">尚未有检测结果</div>
+            <div class="lnc-meta">${n.category || "—"} · ${n.id}</div>
+          </div>
+        </article>`;
+      })
+      .join("");
+  }
+
+  for (const n of order) {
+    const card = grid.querySelector(`.live-node-card[data-node-id="${n.id}"]`);
+    if (!card) continue;
+    const ev = last[n.id];
+    const badge = card.querySelector(".lnc-badge");
+    const city = card.querySelector(".lnc-city");
+    const img = card.querySelector("img");
+    const ph = card.querySelector(".lnc-placeholder");
+    const overlay = card.querySelector(".lnc-overlay");
+    const fileEl = card.querySelector(".lnc-file");
+    const reasonEl = card.querySelector(".lnc-reason");
+    const metaEl = card.querySelector(".lnc-meta");
+
+    if (city) city.textContent = (ev?.city || n.city || n.id);
+    if (!ev || !ev.ok) {
+      card.className = "live-node-card path-idle";
+      if (badge) {
+        badge.className = "lnc-badge idle";
+        badge.textContent = ev && !ev.ok ? "错误" : "等待…";
+      }
+      if (ev && !ev.ok && reasonEl) reasonEl.textContent = ev.error || "error";
+      continue;
+    }
+
+    const path = ev.path_type || "LOCAL";
+    const bcls = pathBadgeClass(path);
+    card.className = `live-node-card path-${bcls === "idle" ? "idle" : bcls}`;
+    if (badge) {
+      badge.className = `lnc-badge ${bcls}`;
+      badge.textContent = pathShort(path);
+    }
+
+    const sig = `${ev.image_url || ""}|${ev.t || 0}`;
+    if (img && ev.image_url && state.live.cardSig[n.id] !== sig) {
+      state.live.cardSig[n.id] = sig;
+      img.onload = () => {
+        img.style.display = "block";
+        if (ph) ph.style.display = "none";
+      };
+      img.onerror = () => {
+        img.style.display = "none";
+        if (ph) {
+          ph.style.display = "grid";
+          ph.textContent = "图像加载失败";
+        }
+      };
+      img.src = ev.image_url;
+    } else if (img && ev.image_url && img.src) {
+      img.style.display = "block";
+      if (ph) ph.style.display = "none";
+    }
+
+    if (overlay) {
+      const fin = String(ev.final || "—").toUpperCase();
+      const gt = ev.gt != null ? String(ev.gt).toUpperCase() : null;
+      const score =
+        ev.edge_score != null && Number.isFinite(Number(ev.edge_score))
+          ? Number(ev.edge_score).toFixed(2)
+          : null;
+      overlay.innerHTML = `
+        <span class="lnc-chip ${fin === "NG" ? "ng" : "ok"}">判 ${fin}</span>
+        ${gt ? `<span class="lnc-chip">GT ${gt}</span>` : ""}
+        ${score != null ? `<span class="lnc-chip">s=${score}</span>` : ""}
+      `;
+    }
+    if (fileEl) fileEl.textContent = `${ev.category || n.category || "—"} / ${ev.image || "—"}`;
+    if (reasonEl) {
+      const u = ev.utility != null ? ` U=${Number(ev.utility).toFixed(2)}` : "";
+      reasonEl.textContent = `${ev.route_reason || path}${u}`;
+    }
+    if (metaEl) {
+      metaEl.textContent = `RTT ${Number(ev.rtt_ms || 0).toFixed(0)}ms · ${Number(ev.bandwidth_mbps || 0).toFixed(0)}Mb · ${(Number(ev.loss_prob || 0) * 100).toFixed(1)}% · ${Number(ev.distance_geo_km || 0).toFixed(0)}km`;
+    }
+  }
+}
+
+function cloudStatusLabel(status) {
+  if (status === "queued") return "排队";
+  if (status === "running") return "检测中";
+  if (status === "done") return "已完成";
+  if (status === "fallback") return "回退";
+  return status || "—";
+}
+
+function finalCloudStatus(path) {
+  if (path === "LOCAL_NET_FALLBACK") return "fallback";
+  if (path === "CLOUD_REVIEW") return "done";
+  // upload_want but still local → treat as queued intent that settled without cloud hop
+  return "done";
+}
+
+function clearCloudBoard() {
+  state.live.cloudBoard = {};
+  state.live.cloudBoardOrder = [];
+  const board = $("#cloud-board");
+  if (board) {
+    board.innerHTML =
+      '<div class="cloud-board-empty" id="cloud-board-empty">尚无上云案件 · 拟上云样本会留在这里，不会消失</div>';
+  }
+}
+
+function findCloudCaseCard(key) {
+  const board = $("#cloud-board");
+  if (!board) return null;
+  return [...board.querySelectorAll(".cloud-case")].find((el) => el.dataset.key === key) || null;
+}
+
+function upsertCloudCaseCard(job) {
+  const board = $("#cloud-board");
+  if (!board) return;
+  $("#cloud-board-empty")?.remove();
+  let card = findCloudCaseCard(job.key);
+  const fin = String(job.final || "—").toUpperCase();
+  const stamp = cloudStatusLabel(job.status);
+  if (!card) {
+    card = document.createElement("article");
+    card.className = `cloud-case status-${job.status}`;
+    card.dataset.key = job.key;
+    card.innerHTML = `
+      <div class="cloud-case-img">
+        <img alt="${job.image || "cloud case"}" />
+        <span class="cloud-case-stamp">${stamp}</span>
+        <span class="cloud-case-fin ${fin === "NG" ? "ng" : "ok"}">${fin}</span>
+      </div>
+      <div class="cloud-case-body">
+        <strong></strong>
+        <span class="cc-file"></span>
+        <span class="cc-path"></span>
+      </div>
+    `;
+    // newest first
+    board.prepend(card);
+    const img = card.querySelector("img");
+    if (img && job.image_url) img.src = job.image_url;
+  } else {
+    card.className = `cloud-case status-${job.status}`;
+    const stampEl = card.querySelector(".cloud-case-stamp");
+    if (stampEl) stampEl.textContent = stamp;
+    const finEl = card.querySelector(".cloud-case-fin");
+    if (finEl) {
+      finEl.textContent = fin;
+      finEl.className = `cloud-case-fin ${fin === "NG" ? "ng" : "ok"}`;
+    }
+  }
+  const strong = card.querySelector("strong");
+  const fileEl = card.querySelector(".cc-file");
+  const pathEl = card.querySelector(".cc-path");
+  if (strong) strong.textContent = job.city || job.edge_node_id || "—";
+  if (fileEl) fileEl.textContent = `${job.category || "—"} / ${job.image || "—"}`;
+  if (pathEl) pathEl.textContent = job.path_type || "UPLOAD";
+  card.title = `${job.city || job.edge_node_id} · ${stamp} · ${job.path_type || ""}`;
+}
+
+function updateCloudBoardMeta(extraAdded = 0) {
+  const meta = $("#cloud-lane-meta");
+  if (!meta) return;
+  const jobs = Object.values(state.live.cloudBoard);
+  const nQ = jobs.filter((j) => j.status === "queued").length;
+  const nR = jobs.filter((j) => j.status === "running").length;
+  const nD = jobs.filter((j) => j.status === "done").length;
+  const nF = jobs.filter((j) => j.status === "fallback").length;
+  meta.textContent = jobs.length
+    ? `共 ${jobs.length} · 排队 ${nQ} · 检测中 ${nR} · 完成 ${nD} · 回退 ${nF}${extraAdded ? ` · +${extraAdded}` : ""}`
+    : state.live.running
+      ? "监测中 · 等待拟上云案件…"
+      : "等待上云流量…";
+}
+
+function scheduleCloudCaseLifecycle(job) {
+  // Visual pipeline: 排队 → 检测中 → 终态（已完成/回退），卡片本身常驻
+  if (job._lifecycleStarted) return;
+  job._lifecycleStarted = true;
+  const age = job.t ? Date.now() / 1000 - job.t : 0;
+  // Old history from poll catch-up: jump straight to final status
+  if (age > 6) {
+    job.status = finalCloudStatus(job.path_type);
+    upsertCloudCaseCard(job);
+    updateCloudBoardMeta();
+    return;
+  }
+  job.status = "queued";
+  upsertCloudCaseCard(job);
+  updateCloudBoardMeta();
+  window.setTimeout(() => {
+    if (!state.live.cloudBoard[job.key]) return;
+    job.status = "running";
+    upsertCloudCaseCard(job);
+    updateCloudBoardMeta();
+  }, 700);
+  window.setTimeout(() => {
+    if (!state.live.cloudBoard[job.key]) return;
+    job.status = finalCloudStatus(job.path_type);
+    upsertCloudCaseCard(job);
+    updateCloudBoardMeta();
+  }, 2200);
+}
+
+function renderCloudBoard(st) {
+  const events = st?.events || [];
+  const uploads = events.filter(
+    (e) =>
+      e?.ok &&
+      e.image_url &&
+      (e.upload_want || e.path_type === "CLOUD_REVIEW" || e.path_type === "LOCAL_NET_FALLBACK")
+  );
+  // events are newest-first; walk older→newer so prepend keeps newest on left/top
+  const incoming = uploads.slice().reverse();
+  let added = 0;
+  for (const e of incoming) {
+    const key = `${e.edge_node_id}|${e.t}|${e.image || ""}`;
+    if (state.live.cloudBoard[key]) continue;
+    const job = {
+      key,
+      edge_node_id: e.edge_node_id,
+      city: e.city,
+      category: e.category,
+      image: e.image,
+      image_url: e.image_url,
+      path_type: e.path_type,
+      final: e.final,
+      t: e.t,
+      status: "queued",
+    };
+    state.live.cloudBoard[key] = job;
+    state.live.cloudBoardOrder.unshift(key);
+    added += 1;
+    scheduleCloudCaseLifecycle(job);
+  }
+  // hard cap display (keep newest)
+  const MAX = 48;
+  while (state.live.cloudBoardOrder.length > MAX) {
+    const old = state.live.cloudBoardOrder.pop();
+    delete state.live.cloudBoard[old];
+    findCloudCaseCard(old)?.remove();
+  }
+  if (!state.live.cloudBoardOrder.length && !$("#cloud-board-empty")) {
+    const board = $("#cloud-board");
+    if (board) {
+      board.innerHTML =
+        '<div class="cloud-board-empty" id="cloud-board-empty">尚无上云案件 · 拟上云样本会留在这里，不会消失</div>';
+    }
+  }
+  updateCloudBoardMeta(added);
+}
+
+function renderLiveStatus(st) {
+  state.live.status = st;
+  state.live.running = !!st?.running;
+  const btn = $("#live-toggle");
+  const dot = $("#live-dot");
+  const label = $("#live-status");
+  if (btn) {
+    btn.textContent = st?.running ? "一键联调 · 停止" : "一键联调 · 启动";
+    btn.classList.toggle("danger", !!st?.running);
+    btn.classList.toggle("primary", !st?.running);
+  }
+  $("#live-bar")?.classList.toggle("is-live", !!st?.running);
+  if (dot) dot.classList.toggle("on", !!st?.running);
+  const stats = st?.stats || {};
+  if (label) {
+    label.textContent = st?.running
+      ? `监测中 · 每 ${Number(st.interval_s || 2).toFixed(1)}s 三节点各跑 1 张 · 轮次 ${stats.ticks || 0}`
+      : "未启动 · 启动后三节点自动监测并展示测试图像";
+  }
+  const hint = $("#live-stage-hint");
+  if (hint) {
+    hint.textContent = st?.running
+      ? "下方三路画面随轮次刷新；Cloud Uplink 案件板常驻显示上云样本（颜色=排队/检测中/完成/回退）"
+      : "启动联调后，每个边缘节点的当前测试图、路由路径与判决会显示在这里";
+  }
+  if ($("#live-kpi-ticks")) $("#live-kpi-ticks").textContent = String(stats.ticks || 0);
+  if ($("#live-kpi-local")) $("#live-kpi-local").textContent = String(stats.n_local || 0);
+  if ($("#live-kpi-want")) $("#live-kpi-want").textContent = String(stats.n_upload_want || 0);
+  if ($("#live-kpi-cloud")) $("#live-kpi-cloud").textContent = String(stats.n_cloud_ok || 0);
+  if ($("#live-kpi-fb")) $("#live-kpi-fb").textContent = String(stats.n_fallback || 0);
+  const cloud = st?.cloud || {};
+  if ($("#live-kpi-inflight")) {
+    $("#live-kpi-inflight").textContent = `${cloud.inflight || 0}/${cloud.max_inflight || 2}`;
+  }
+
+  // pulse map for link animation
+  const last = st?.last_by_node || {};
+  for (const [nid, ev] of Object.entries(last)) {
+    if (!ev || !ev.ok) continue;
+    state.live.linkPulse[nid] = {
+      upload: !!ev.upload_want || ev.path_type === "CLOUD_REVIEW" || ev.path_type === "LOCAL_NET_FALLBACK",
+      path: ev.path_type || "LOCAL",
+      t: (ev.t || 0) * 1000,
+    };
+  }
+
+  renderLiveNodeCards(st);
+  renderCloudBoard(st);
+}
+
+async function pollLive() {
+  try {
+    const st = await api("/api/fleet/live");
+    renderLiveStatus(st);
+    if (st.running) {
+      await pollTopology();
+      ensureLiveAnim();
+    }
+  } catch (e) {
+    if ($("#live-status")) $("#live-status").textContent = `联调状态失败：${e.message}`;
+  }
+}
+
+async function toggleLive() {
+  const running = !!state.live.running;
+  try {
+    if (running) {
+      const st = await api("/api/fleet/live/stop", { method: "POST" });
+      renderLiveStatus(st);
+      if (state.live.pollTimer) {
+        clearInterval(state.live.pollTimer);
+        state.live.pollTimer = null;
+      }
+    } else {
+      switchPanel("topology");
+      clearCloudBoard();
+      const fd = new FormData();
+      fd.append("interval_s", "2.0");
+      fd.append("use_route_agent", "false");
+      fd.append("live_cloud", "false");
+      const res = await fetch("/api/fleet/live/start", { method: "POST", body: fd });
+      const st = await res.json();
+      if (!res.ok) throw new Error(st.detail || JSON.stringify(st));
+      renderLiveStatus(st);
+      ensureLiveAnim();
+      if (state.live.pollTimer) clearInterval(state.live.pollTimer);
+      state.live.pollTimer = setInterval(() => pollLive().catch(() => {}), 1000);
+      await pollLive();
+    }
+  } catch (e) {
+    if ($("#live-status")) $("#live-status").textContent = `操作失败：${e.message}`;
+  }
+}
+
 function bind() {
   setupTabs();
   bindTopoCanvas();
@@ -1082,6 +1622,7 @@ function bind() {
   $("#topo-restore")?.addEventListener("click", () => {
     restoreNetwork(state.selectedEdgeId).catch(() => {});
   });
+  $("#live-toggle")?.addEventListener("click", () => toggleLive());
 }
 
 function showBootError(err) {
@@ -1123,9 +1664,15 @@ async function main() {
     }
     await pollNetwork().catch(() => {});
     await pollTopology().catch(() => {});
+    await pollLive().catch(() => {});
     setInterval(() => pollNetwork().catch(() => {}), 1000);
     setInterval(() => pollTopology().catch(() => {}), 1000);
     setInterval(() => health().catch(() => {}), 2000);
+    setInterval(() => {
+      if (state.live.running || $("#panel-topology")?.classList.contains("active")) {
+        pollLive().catch(() => {});
+      }
+    }, 1500);
   } catch (err) {
     console.error(err);
     showBootError(err);

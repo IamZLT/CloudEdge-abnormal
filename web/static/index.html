@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CloudEdge Defect · Console</title>
-  <link rel="stylesheet" href="/static/app.css?v=20260808h" />
+  <link rel="stylesheet" href="/static/app.css?v=20260808k" />
 </head>
 <body>
   <div class="page">
@@ -87,10 +87,52 @@
           <div>
             <h1>云边拓扑 · 实时链路</h1>
             <p class="lead">
-              云在中心，边缘按地理距离排布（越远离云越远）。链路上实时显示 RTT / 带宽 / 丢包 / 拥堵。
+              云在中心，边缘按地理距离排布。开启「一键联调」后三节点自动轮询检测，链路与云端负载实时刷新。
             </p>
           </div>
         </header>
+
+        <div class="live-bar" id="live-bar">
+          <div class="live-bar-main">
+            <button type="button" class="btn primary" id="live-toggle">一键联调 · 启动</button>
+            <span class="live-dot" id="live-dot" aria-hidden="true"></span>
+            <span class="hint" id="live-status">未启动 · 启动后三节点自动监测并展示测试图像</span>
+          </div>
+          <div class="live-kpis" id="live-kpis">
+            <div><span>轮次</span><strong id="live-kpi-ticks">0</strong></div>
+            <div><span>本地</span><strong id="live-kpi-local">0</strong></div>
+            <div><span>拟上云</span><strong id="live-kpi-want">0</strong></div>
+            <div><span>云端成功</span><strong id="live-kpi-cloud">0</strong></div>
+            <div><span>回退</span><strong id="live-kpi-fb">0</strong></div>
+            <div><span>云并发</span><strong id="live-kpi-inflight">0/2</strong></div>
+          </div>
+        </div>
+
+        <!-- Per-edge live image stage -->
+        <div class="live-stage" id="live-stage">
+          <div class="live-stage-head">
+            <h3>三节点实时检测画面</h3>
+            <p class="hint" id="live-stage-hint">启动联调后，每个边缘节点的当前测试图、路由路径与判决会显示在这里</p>
+          </div>
+          <div class="live-node-grid" id="live-node-grid"></div>
+          <div class="live-cloud-lane" id="live-cloud-lane" aria-label="cloud uplink board">
+            <div class="cloud-lane-label">
+              <div>
+                <strong>Cloud Uplink · 上云案件板</strong>
+                <div class="cloud-legend" aria-label="status legend">
+                  <span class="clg queued">排队</span>
+                  <span class="clg running">检测中</span>
+                  <span class="clg done">已完成</span>
+                  <span class="clg fallback">回退</span>
+                </div>
+              </div>
+              <span id="cloud-lane-meta">等待上云流量…</span>
+            </div>
+            <div class="cloud-board" id="cloud-board">
+              <div class="cloud-board-empty" id="cloud-board-empty">尚无上云案件 · 拟上云样本会留在这里，不会消失</div>
+            </div>
+          </div>
+        </div>
 
         <div class="topo-layout">
           <div class="topo-stage">
@@ -104,10 +146,10 @@
               </div>
             </div>
             <canvas id="topo-canvas" width="1100" height="560" aria-label="cloud edge topology"></canvas>
-            <p class="hint" id="topo-hint">点击边缘节点选中；圆点大小/径向距离反映地理远近。</p>
+            <p class="hint" id="topo-hint">粗亮光束 + 数据包：边缘→云端传输；云端外环=并发负载。</p>
           </div>
           <aside class="topo-side">
-            <h3>链路明细</h3>
+            <h3>云边链路状态</h3>
             <div id="topo-link-list" class="topo-link-list"></div>
             <div class="topo-selected" id="topo-selected">
               <h4>当前选中</h4>
@@ -261,6 +303,6 @@
       <span id="health-line">checking…</span>
     </footer>
   </div>
-  <script src="/static/app.js?v=20260808h"></script>
+  <script src="/static/app.js?v=20260808k"></script>
 </body>
 </html>

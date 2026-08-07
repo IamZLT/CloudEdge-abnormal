@@ -252,6 +252,36 @@ def build_edge_node_specs(
     return specs
 
 
+@dataclass
+class FleetCloudState:
+    """Shared cloud reviewer occupancy for CRR admission."""
+
+    inflight: int = 0
+    queue: int = 0
+    max_inflight: int = 2
+    recent_cloud: dict[str, float] = field(default_factory=dict)
+
+    def to_cloud_state(self):
+        from src.collab_routing import CloudState
+
+        return CloudState(
+            inflight=int(self.inflight),
+            queue=int(self.queue),
+            max_inflight=int(self.max_inflight),
+        )
+
+    def note_upload(self, edge_node_id: str, *, ok: bool) -> None:
+        """Track fairness counters after an upload attempt."""
+        eid = str(edge_node_id)
+        self.recent_cloud[eid] = float(self.recent_cloud.get(eid, 0.0)) + (1.0 if ok else 0.3)
+
+    def decay_recent(self, factor: float = 0.95) -> None:
+        for k in list(self.recent_cloud):
+            self.recent_cloud[k] = float(self.recent_cloud[k]) * factor
+            if self.recent_cloud[k] < 1e-3:
+                del self.recent_cloud[k]
+
+
 class EdgeFleet:
     """Collection of edge nodes sharing one cloud + one physical network world."""
 
@@ -261,6 +291,7 @@ class EdgeFleet:
         *,
         num_nodes: int | None = None,
         env: NetworkEnvironment | None = None,
+        cloud_max_inflight: int = 2,
     ):
         if not nodes:
             raise ValueError("EdgeFleet requires at least one node")
@@ -269,6 +300,7 @@ class EdgeFleet:
         self.num_nodes = int(num_nodes if num_nodes is not None else len(nodes))
         self.active_id: str = self.order[0]
         self.env = env
+        self.cloud_state = FleetCloudState(max_inflight=int(cloud_max_inflight))
         if env is not None:
             for n in nodes:
                 n.bind_env(env)
@@ -329,7 +361,10 @@ class EdgeFleet:
             )
             for i, s in enumerate(specs)
         ]
-        return cls(nodes, num_nodes=len(nodes), env=env)
+        adm = dict(collab.get("cloud_admission") or {})
+        k = int(adm.get("max_inflight", 2))
+        fleet = cls(nodes, num_nodes=len(nodes), env=env, cloud_max_inflight=k)
+        return fleet
 
     def get(self, node_id: str | None = None) -> EdgeNode:
         nid = node_id or self.active_id
@@ -345,11 +380,20 @@ class EdgeFleet:
     def list_nodes(self) -> list[dict[str, Any]]:
         return [self.nodes[i].to_dict() for i in self.order]
 
+    def recent_cloud_for(self, edge_node_id: str) -> float:
+        return float(self.cloud_state.recent_cloud.get(str(edge_node_id), 0.0))
+
     def summary(self) -> dict[str, Any]:
         out: dict[str, Any] = {
             "num_nodes": self.num_nodes,
             "active_id": self.active_id,
             "network_mode": "physical_geo_temporal" if self.env is not None else "legacy_profile",
+            "cloud": {
+                "inflight": self.cloud_state.inflight,
+                "queue": self.cloud_state.queue,
+                "max_inflight": self.cloud_state.max_inflight,
+                "recent_cloud": dict(self.cloud_state.recent_cloud),
+            },
             "nodes": self.list_nodes(),
         }
         if self.env is not None:

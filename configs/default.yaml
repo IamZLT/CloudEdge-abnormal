@@ -47,6 +47,24 @@ collab:
   cloud_extra_latency_ms: 80.0
   upload_bytes_hard: 80000
   upload_bytes_full: 350000
+  thr_margin: 0.05
+  hard_margin: 0.05
+  n_gallery_default: 16
+  # Pluggable upload router: cost_risk (CRR, default) | baseline (legacy margin)
+  # Implementations live in src/collab_routing/
+  route_policy: cost_risk
+  cost_risk:
+    n_ref: 16
+    w_n: 0.8
+    w_c: 0.5
+    w_g: 0.6
+    rtt_ref_ms: 80
+    bw_ref_mbps: 50
+    weak_c_net: 0.75
+    force_unc: 0.85
+  cloud_admission:
+    max_inflight: 2
+    fairness_gamma: 0.1
   # Multi-edge fleet (1 cloud + N edges). Alias: num_edge_nodes
   num_edge_nodes: 3
   edge_fleet:
@@ -100,7 +118,7 @@ collab:
     backend: gguf
     # text|auto: reuse AD CONTEXT, skip 2nd vision encode; full: re-encode image
     vision_mode: text
-    # when vision_mode=text, snap upload to CONTEXT rules (score_margin / n_gallery / outage)
+    # when vision_mode=text, snap upload to collab.route_policy (CRR / baseline)
     enforce_context_rules: true
     model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
     gguf_dir: model_card/qwen3.5VL-0.8B-q
