@@ -63,6 +63,10 @@ collab:
     enabled: true
     # backend: gguf (default Q4) | hf (bf16 full VL)
     backend: gguf
+    # text|auto: reuse AD CONTEXT, skip 2nd vision encode; full: re-encode image
+    vision_mode: text
+    # when vision_mode=text, snap upload to CONTEXT rules (score_margin / n_gallery / outage)
+    enforce_context_rules: true
     model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
     gguf_dir: model_card/qwen3.5VL-0.8B-q
     # mmproj_gguf: model_card/qwen3.5VL-0.8B-q/Qwen3.5-0.8B-mmproj-F16.gguf

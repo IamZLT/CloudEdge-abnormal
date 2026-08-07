@@ -116,13 +116,14 @@ CUDA_VISIBLE_DEVICES=0 WEB_VLM_DEVICE=cuda:0 WEB_ROUTE_DEVICE=cuda:0 \
 - 协同演示：边侧分数 → **RouteAgent（GGUF Q4）** → 网络仿真 → 可选云端 LoRA  
 - 建议先点 **Preload RouteAgent (Q4)**  
 
-默认配置：`collab.route_agent.backend: gguf`。
+默认配置：`collab.route_agent.backend: gguf`，`vision_mode: text`（复用 AD 的 CONTEXT，不再二次跑视觉编码）。
 
 ---
 
 ## 边侧默认：Qwen3.5-0.8B（多层 patch）
 
-边侧 AD **只用视觉塔**；上云决策走 RouteAgent（LLM，默认 Q4）。
+边侧 AD **只用视觉塔**；上云决策走 RouteAgent（LLM，默认 Q4）。  
+AD 已出 `score/thr/network` 后，Route 默认 **只吃文本 CONTEXT**（`vision_mode: text`），避免 GGUF/HF 再编一次图；需要看图时设 `vision_mode: full`。
 
 ```bash
 conda activate clip
@@ -164,6 +165,11 @@ CUDA_VISIBLE_DEVICES=0 python scripts/bench_qwen_quant_compare.py \
 # RouteAgent：HF bf16 vs GGUF Q4
 CUDA_VISIBLE_DEVICES=0 python scripts/bench_route_quant_compare.py \
   --category bottle --n-samples 4 --tag route_q4
+
+# RouteAgent：full（二次视觉）vs text（复用 AD CONTEXT）
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_route_vision_reuse.py \
+  --category bottle --n-samples 8 --tag route_reuse
+# bottle×8 / GGUF：~473ms → ~269ms（约 1.76×），text 与 CONTEXT 规则一致率 100%
 ```
 
 `llama-cpp-python` 需带 CUDA（预编译 wheel 不兼容时可源码编译）：

@@ -4,6 +4,13 @@ Backends:
   - hf   : transformers Qwen3_5ForConditionalGeneration (bf16/fp16)
   - gguf : llama.cpp Q4_K_M LLM + mmproj-F16 vision (MTMDChatHandler)
 
+vision_mode:
+  - text|auto (default): reuse edge-AD CONTEXT; skip 2nd vision encode
+  - full: attach product image again (mmproj / HF vision)
+
+When skipping the image, enforce_context_rules (default True) snaps upload to
+the documented CONTEXT heuristic so tiny VLMs cannot ignore score_margin rules.
+
 Network outage is a hard gate (no LLM call). Parse failures fall back to
 hard_margin heuristic.
 """
@@ -26,7 +33,10 @@ DEFAULT_MODEL = "/data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B"
 DEFAULT_GGUF_DIR = str(Path(__file__).resolve().parents[2] / "model_card" / "qwen3.5VL-0.8B-q")
 
 DEFAULT_ROUTE_PROMPT = """You are an edge routing agent for industrial defect inspection.
-Given the product image and CONTEXT, decide whether to upload to a stronger cloud VLM.
+Given CONTEXT (and optionally a product image), decide whether to upload to a stronger cloud VLM.
+
+The edge AD has already scored the image; CONTEXT summarizes that evidence.
+When no image is attached, rely entirely on CONTEXT numbers and rules.
 
 Reply with ONLY one JSON object (no markdown):
 {"upload": true or false, "confidence": float 0-1, "reason": "short English"}
@@ -40,6 +50,28 @@ Rules (priority order):
 """
 
 
+def resolve_include_image(
+    vision_mode: str | None,
+    *,
+    include_image: bool | None = None,
+) -> bool:
+    """Whether RouteAgent should re-encode the product image.
+
+    Modes:
+      full / image / multimodal — always attach image (2nd vision encode)
+      text / reuse / skip_image  — CONTEXT only (reuse AD evidence; no 2nd encode)
+      auto — same as text when called after edge AD (default production path)
+    """
+    if include_image is not None:
+        return bool(include_image)
+    mode = str(vision_mode or "text").strip().lower()
+    if mode in {"full", "image", "multimodal", "mm", "vision"}:
+        return True
+    if mode in {"text", "text_only", "reuse", "skip_image", "context", "auto"}:
+        return False
+    return False
+
+
 @dataclass
 class RouteContext:
     image: str | Path | Image.Image
@@ -51,6 +83,8 @@ class RouteContext:
     network_profile: str = "fair"
     network: dict[str, Any] = field(default_factory=dict)
     hard_margin: float = 0.05
+    # None → use RouteAgent.vision_mode; True/False overrides
+    include_image: bool | None = None
 
     def score_margin(self) -> float:
         return abs(float(self.edge_score) - float(self.edge_thr))
@@ -69,6 +103,7 @@ class RouteContext:
             f"- hard_margin: {float(self.hard_margin):.6f}\n"
             f"- network_profile: {self.network_profile}\n"
             f"- network: {json.dumps(net, ensure_ascii=False)}\n"
+            f"- ad_vision_done: true\n"
         )
 
 
@@ -83,6 +118,8 @@ class RouteDecision:
     raw: str = ""
     network_profile: str = "fair"
     peak_mem_mb: float | None = None
+    include_image: bool = False
+    vision_mode: str = "text"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -226,6 +263,8 @@ class RouteAgent:
         n_gpu_layers: int = -1,
         n_ctx: int = 4096,
         verbose: bool = False,
+        vision_mode: str = "text",
+        enforce_context_rules: bool | None = None,
     ):
         self.backend = str(backend or "hf").lower()
         if self.backend in {"q4", "quant", "llama", "llama_cpp", "llama.cpp"}:
@@ -239,13 +278,25 @@ class RouteAgent:
         self.n_gpu_layers = int(n_gpu_layers)
         self.n_ctx = int(n_ctx)
         self.verbose = bool(verbose)
+        # text|auto: skip 2nd vision encode (reuse AD CONTEXT); full: re-encode image
+        self.vision_mode = str(vision_mode or "text").lower()
+        # When skipping image, snap upload to CONTEXT rules (0.8B often flips bits otherwise).
+        # Default: on for text/auto, off for full multimodal.
+        if enforce_context_rules is None:
+            self.enforce_context_rules = self.vision_mode not in {"full", "image", "multimodal", "mm", "vision"}
+        else:
+            self.enforce_context_rules = bool(enforce_context_rules)
 
         self.processor = None
         self.model = None
         self.llm = None
         self._input_device = None
         self._cuda_index = _cuda_index_from_device(device)
-        self.meta: dict[str, Any] = {"backend": self.backend}
+        self.meta: dict[str, Any] = {
+            "backend": self.backend,
+            "vision_mode": self.vision_mode,
+            "enforce_context_rules": self.enforce_context_rules,
+        }
 
         if self.backend == "gguf":
             self._init_gguf()
@@ -403,19 +454,26 @@ class RouteAgent:
             n_gpu_layers=int(cfg.get("n_gpu_layers", -1)),
             n_ctx=int(cfg.get("n_ctx") or 4096),
             verbose=bool(cfg.get("verbose", False)),
+            vision_mode=str(cfg.get("vision_mode") or "text"),
+            enforce_context_rules=cfg.get("enforce_context_rules"),
         )
 
-    def _decide_hf(self, pil: Image.Image, user_text: str) -> tuple[str, float, float | None]:
+    def _decide_hf(
+        self,
+        pil: Image.Image | None,
+        user_text: str,
+        *,
+        include_image: bool,
+    ) -> tuple[str, float, float | None]:
         assert self.processor is not None and self.model is not None
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": pil},
-                    {"type": "text", "text": user_text},
-                ],
-            }
-        ]
+        if include_image and pil is not None:
+            content: list[dict[str, Any]] = [
+                {"type": "image", "image": pil},
+                {"type": "text", "text": user_text},
+            ]
+        else:
+            content = [{"type": "text", "text": user_text}]
+        messages = [{"role": "user", "content": content}]
         try:
             inputs = self.processor.apply_chat_template(
                 messages,
@@ -428,7 +486,10 @@ class RouteAgent:
             text = self.processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
-            inputs = self.processor(text=[text], images=[pil], padding=True, return_tensors="pt")
+            if include_image and pil is not None:
+                inputs = self.processor(text=[text], images=[pil], padding=True, return_tensors="pt")
+            else:
+                inputs = self.processor(text=[text], padding=True, return_tensors="pt")
 
         target = self._input_device
         inputs = {k: v.to(target) if hasattr(v, "to") else v for k, v in inputs.items()}
@@ -460,18 +521,24 @@ class RouteAgent:
             peak = None
         return raw, latency_ms, peak
 
-    def _decide_gguf(self, pil: Image.Image, user_text: str) -> tuple[str, float, float | None]:
+    def _decide_gguf(
+        self,
+        pil: Image.Image | None,
+        user_text: str,
+        *,
+        include_image: bool,
+    ) -> tuple[str, float, float | None]:
         assert self.llm is not None
-        uri = _pil_to_data_uri(pil)
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": uri}},
-                ],
-            }
-        ]
+        if include_image and pil is not None:
+            uri = _pil_to_data_uri(pil)
+            content: list[dict[str, Any]] = [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": uri}},
+            ]
+        else:
+            # Text-only: skip mmproj / 2nd vision encode; reuse AD CONTEXT
+            content = [{"type": "text", "text": user_text}]
+        messages = [{"role": "user", "content": content}]
         mem0 = _gpu_used_mb(self._cuda_index)
         t0 = time.perf_counter()
         out = self.llm.create_chat_completion(
@@ -500,6 +567,7 @@ class RouteAgent:
 
     def decide(self, ctx: RouteContext) -> RouteDecision:
         profile = str(ctx.network_profile or "fair").lower()
+        include_image = resolve_include_image(self.vision_mode, include_image=ctx.include_image)
         if self.hard_block_on_outage and profile == "outage":
             return RouteDecision(
                 upload=False,
@@ -509,18 +577,22 @@ class RouteAgent:
                 parse_ok=True,
                 source="hard_gate",
                 network_profile=profile,
+                include_image=False,
+                vision_mode=self.vision_mode,
             )
 
-        if isinstance(ctx.image, (str, Path)):
-            pil = Image.open(ctx.image).convert("RGB")
-        else:
-            pil = ctx.image.convert("RGB")
+        pil: Image.Image | None = None
+        if include_image:
+            if isinstance(ctx.image, (str, Path)):
+                pil = Image.open(ctx.image).convert("RGB")
+            else:
+                pil = ctx.image.convert("RGB")
 
         user_text = f"{self.prompt.strip()}\n\n{ctx.context_text()}"
         if self.backend == "gguf":
-            raw, latency_ms, peak = self._decide_gguf(pil, user_text)
+            raw, latency_ms, peak = self._decide_gguf(pil, user_text, include_image=include_image)
         else:
-            raw, latency_ms, peak = self._decide_hf(pil, user_text)
+            raw, latency_ms, peak = self._decide_hf(pil, user_text, include_image=include_image)
 
         parsed = parse_route_json(raw)
         if not parsed.get("parse_ok") or parsed.get("upload") is None:
@@ -535,18 +607,34 @@ class RouteAgent:
                 raw=raw,
                 network_profile=profile,
                 peak_mem_mb=peak,
+                include_image=include_image,
+                vision_mode=self.vision_mode,
             )
 
+        upload = bool(parsed["upload"])
+        source = "llm"
+        reason = str(parsed.get("reason") or "")
+        # Text / reuse path: AD already summarized the image — keep upload consistent
+        # with the documented CONTEXT rules (tiny VLMs often ignore them).
+        if (not include_image) and self.enforce_context_rules:
+            ruled = heuristic_upload(ctx)
+            if upload != ruled:
+                reason = (reason + " | " if reason else "") + f"rules_snap: upload->{ruled}"
+                upload = ruled
+                source = "llm_rules_snapped"
+
         return RouteDecision(
-            upload=bool(parsed["upload"]),
+            upload=upload,
             confidence=float(parsed["confidence"]),
-            reason=str(parsed.get("reason") or ""),
+            reason=reason,
             latency_ms=float(latency_ms),
             parse_ok=True,
-            source="llm",
+            source=source,
             raw=raw,
             network_profile=profile,
             peak_mem_mb=peak,
+            include_image=include_image,
+            vision_mode=self.vision_mode,
         )
 
 

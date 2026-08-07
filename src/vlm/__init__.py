@@ -2,7 +2,14 @@
 
 from .parse import parse_vlm_json
 from .qwen_client import QwenVLClient, VLMResult
-from .route_agent import RouteAgent, RouteContext, RouteDecision, heuristic_upload, parse_route_json
+from .route_agent import (
+    RouteAgent,
+    RouteContext,
+    RouteDecision,
+    heuristic_upload,
+    parse_route_json,
+    resolve_include_image,
+)
 
 __all__ = [
     "QwenVLClient",
@@ -13,4 +20,5 @@ __all__ = [
     "RouteDecision",
     "heuristic_upload",
     "parse_route_json",
+    "resolve_include_image",
 ]
