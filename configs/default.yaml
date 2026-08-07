@@ -57,13 +57,20 @@ collab:
     # bandwidth_mbps: 10
     # loss_prob: 0.02
     # timeout_ms: 2000
-  # Qwen3.5-0.8B multimodal agent: decide upload vs local (needs transformers>=5.3)
+  # Qwen3.5-0.8B multimodal agent: decide upload vs local
+  # default: gguf Q4_K_M LLM + mmproj-F16 (llama-cpp-python, CUDA preferred)
   route_agent:
     enabled: true
+    # backend: gguf (default Q4) | hf (bf16 full VL)
+    backend: gguf
     model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+    gguf_dir: model_card/qwen3.5VL-0.8B-q
+    # mmproj_gguf: model_card/qwen3.5VL-0.8B-q/Qwen3.5-0.8B-mmproj-F16.gguf
     device: cuda:0
     dtype: bfloat16
     max_new_tokens: 96
+    n_ctx: 4096
+    n_gpu_layers: -1
     hard_block_on_outage: true
 
 mlflow:

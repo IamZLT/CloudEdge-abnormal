@@ -3,6 +3,7 @@
 
 Methods (16-shot train/good gallery by default):
   clip / dinov3 / qwen35  — patch-token NN gallery → anomaly map
+  qwen35_q                — same AD, vision weights from mmproj GGUF (F16)
   padim_16shot            — Anomalib PaDiM from outputs/anomalib_16shot
   padim                   — full-good PaDiM from outputs/anomalib
 
@@ -11,10 +12,10 @@ Example:
     /home/zlt/miniconda3/envs/dinov3/bin/python scripts/bench_edge_pixel_viz.py \\
     --methods clip dinov3 --categories bottle screw --max-gallery 16
 
-  # Qwen needs clip env (Qwen3VLVisionModel + safetensors):
+  # Qwen needs clip env (Qwen3VLVisionModel + safetensors / gguf):
   CUDA_VISIBLE_DEVICES=2 \\
     /home/zlt/miniconda3/envs/clip/bin/python scripts/bench_edge_pixel_viz.py \\
-    --methods qwen35 --categories bottle --max-gallery 16
+    --methods qwen35 qwen35_q --categories bottle --max-gallery 16
 """
 from __future__ import annotations
 
@@ -54,12 +55,14 @@ DEFAULT_PATHS = {
     "clip": "/data2/zlt/anomaly_detection_llm/model_card/clip-vit-large-patch14",
     "dinov3": "/data2/zlt/anomaly_detection_llm/model_card/dinov3-vitl16-pretrain-lvd1689m",
     "qwen35": "/data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B",
+    "qwen35_q": str(ROOT / "model_card" / "qwen3.5VL-0.8B-q"),
 }
 
 METHOD_TITLES = {
     "clip_vitl14_mlpatch": "CLIP-ML",
     "dinov3_vitl16_mlpatch": "DINOv3-ML",
     "qwen35_0.8b_vision_mlpatch": "Qwen-ML",
+    "qwen35_0.8b_mmproj_mlpatch": "Qwen-Q",
     # legacy single-layer names (older runs)
     "clip_vitl14_patch": "CLIP",
     "dinov3_vitl16_patch": "DINOv3",
@@ -72,6 +75,7 @@ DEFAULT_LAYERS = {
     "clip": [12, 16, 20, 24],
     "dinov3": [12, 16, 20, 24],
     "qwen35": [6, 8, 10, 12],
+    "qwen35_q": [6, 8, 10, 12],
 }
 
 
@@ -176,6 +180,17 @@ def run_patch_method(
             layers=layer_ids,
         )
         name = "qwen35_0.8b_vision_mlpatch"
+    elif method in {"qwen35_q", "qwen35_quant", "qwen35_mmproj"}:
+        hf = DEFAULT_PATHS["qwen35"]
+        _, encode_patches, meta = load_qwen35_vision_encoder(
+            hf,
+            device=device,
+            max_pixels=image_size * image_size,
+            layers=layer_ids,
+            mmproj_gguf=DEFAULT_PATHS["qwen35_q"],
+            config_path=hf,
+        )
+        name = "qwen35_0.8b_mmproj_mlpatch"
     else:
         raise ValueError(method)
 
@@ -333,7 +348,7 @@ def main():
 
     methods = args.methods
     if methods == ["all"]:
-        methods = ["clip", "dinov3", "qwen35", "padim_16shot", "padim"]
+        methods = ["clip", "dinov3", "qwen35", "qwen35_q", "padim_16shot", "padim"]
     cats = CATS if args.categories == ["all"] else args.categories
     data_root = Path(args.data_root)
     out_dir = Path(args.out_dir)
@@ -405,6 +420,7 @@ def main():
             "clip_vitl14_mlpatch",
             "dinov3_vitl16_mlpatch",
             "qwen35_0.8b_vision_mlpatch",
+            "qwen35_0.8b_mmproj_mlpatch",
             "clip_vitl14_patch",
             "dinov3_vitl16_patch",
             "qwen35_0.8b_vision_patch",

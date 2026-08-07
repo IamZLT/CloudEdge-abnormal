@@ -173,7 +173,7 @@ def load_summary() -> dict:
         "stack": {
             "edge": "Qwen3.5-0.8B vision multi-layer patch gallery (PaDiM optional)",
             "cloud": "Qwen3-VL-8B + LoRA (also 4B LoRA available)",
-            "collab": "Qwen3.5 RouteAgent + network sim (good/fair/weak/outage)",
+            "collab": "Qwen3.5 RouteAgent (GGUF Q4 default) + network sim (good/fair/weak/outage)",
         },
     }
 
@@ -368,7 +368,7 @@ def get_cloud_client():
 
 
 def get_route_agent():
-    """Lazy-load Qwen3.5 RouteAgent (full multimodal)."""
+    """Lazy-load Qwen3.5 RouteAgent (default: GGUF Q4 + mmproj)."""
     global _route_agent, _route_agent_error
     if _route_agent is not None:
         return _route_agent
@@ -380,13 +380,40 @@ def get_route_agent():
 
             collab = _load_default_collab()
             ra_cfg = dict(collab.get("route_agent") or {})
+            # env overrides for web deploy
             ra_cfg["device"] = os.environ.get("WEB_ROUTE_DEVICE", ra_cfg.get("device", "cuda:0"))
+            if os.environ.get("WEB_ROUTE_BACKEND"):
+                ra_cfg["backend"] = os.environ["WEB_ROUTE_BACKEND"]
+            if os.environ.get("WEB_ROUTE_GGUF_DIR"):
+                ra_cfg["gguf_dir"] = os.environ["WEB_ROUTE_GGUF_DIR"]
+            ra_cfg.setdefault("backend", "gguf")
             _route_agent = RouteAgent.from_config(ra_cfg)
             _route_agent_error = None
             return _route_agent
         except Exception as exc:  # noqa: BLE001
             _route_agent_error = str(exc)
             raise
+
+
+def _route_agent_info() -> dict[str, Any]:
+    """Status snippet for health / preload responses."""
+    if _route_agent is None:
+        return {
+            "loaded": False,
+            "error": _route_agent_error,
+            "backend": (_load_default_collab().get("route_agent") or {}).get("backend", "gguf"),
+        }
+    meta = dict(getattr(_route_agent, "meta", None) or {})
+    return {
+        "loaded": True,
+        "error": None,
+        "backend": getattr(_route_agent, "backend", meta.get("backend")),
+        "weight_source": meta.get("weight_source"),
+        "gpu_footprint_mb": meta.get("gpu_footprint_mb"),
+        "package_disk_mb": meta.get("package_disk_mb"),
+        "n_gpu_layers": meta.get("n_gpu_layers"),
+        "gpu_offload_reported": meta.get("gpu_offload_reported"),
+    }
 
 
 def _run_route_decision(
@@ -426,17 +453,22 @@ def _run_route_decision(
             agent = get_route_agent()
             dec = agent.decide(ctx)
             route_info = dec.to_dict()
+            meta = dict(getattr(agent, "meta", None) or {})
+            route_info["backend"] = getattr(agent, "backend", meta.get("backend"))
+            route_info["weight_source"] = meta.get("weight_source")
+            route_info["gpu_footprint_mb"] = meta.get("gpu_footprint_mb")
         except Exception as exc:  # noqa: BLE001
             upload = heuristic_upload(ctx)
             route_info = {
                 "upload": upload,
                 "confidence": 0.0,
-                "reason": f"route_agent_unavailable ? heuristic: {exc}",
+                "reason": f"route_agent_unavailable -> heuristic: {exc}",
                 "source": "heuristic_fallback",
                 "parse_ok": False,
                 "latency_ms": 0.0,
                 "raw": "",
                 "network_profile": profile,
+                "backend": (_load_default_collab().get("route_agent") or {}).get("backend", "gguf"),
             }
     else:
         upload = heuristic_upload(ctx)
@@ -498,12 +530,14 @@ def index():
 @app.get("/api/health")
 def health():
     snap = _network_snapshot()
+    ra = _route_agent_info()
     return {
         "ok": True,
         "cloud_loaded": _cloud_client is not None,
         "cloud_error": _cloud_error,
-        "route_agent_loaded": _route_agent is not None,
-        "route_agent_error": _route_agent_error,
+        "route_agent_loaded": ra["loaded"],
+        "route_agent_error": ra.get("error"),
+        "route_agent": ra,
         "network_profile": snap.get("profile"),
         "data_root": str(DATA_ROOT),
         "cuda": os.environ.get("CUDA_VISIBLE_DEVICES"),
@@ -645,9 +679,13 @@ def api_network_timeseries(n: int = Query(120, ge=10, le=180)):
 def api_route_agent_load():
     try:
         get_route_agent()
-        return {"ok": True, "loaded": True}
+        info = _route_agent_info()
+        return {"ok": True, "loaded": True, **info}
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        return JSONResponse(
+            {"ok": False, "error": str(exc), **_route_agent_info()},
+            status_code=503,
+        )
 
 
 @app.get("/api/summary")

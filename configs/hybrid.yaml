@@ -34,10 +34,14 @@ collab:
     seed: 42
   route_agent:
     enabled: true
+    backend: gguf
     model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+    gguf_dir: model_card/qwen3.5VL-0.8B-q
     device: cuda:0
     dtype: bfloat16
     max_new_tokens: 96
+    n_ctx: 4096
+    n_gpu_layers: -1
     hard_block_on_outage: true
 
 prompt: |

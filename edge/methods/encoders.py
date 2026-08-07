@@ -180,29 +180,8 @@ def load_dinov3_encoder(
     return encode, encode_patches, meta
 
 
-def load_qwen35_vision_encoder(
-    model_path: str | Path,
-    device: str = "cuda:0",
-    max_pixels: int = 224 * 224,
-    layers: list[int] | None = None,
-) -> tuple[EncodeFn, EncodePatchesFn, dict[str, Any]]:
-    """Qwen3.5-0.8B vision tower — multi-layer **pre-merger** patch tokens.
-
-    Spatial merge is skipped for AD maps so resolution stays grid_thw (e.g. 14×14).
-    """
-    import json
-
-    import torch.nn.functional as F
+def _visual_state_from_hf_safetensors(model_path: Path) -> dict[str, torch.Tensor]:
     from safetensors import safe_open
-    from transformers import AutoProcessor, Qwen3VLVisionModel
-    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
-
-    model_path = Path(model_path)
-    raw = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
-    vc = dict(raw["vision_config"])
-    vc.pop("model_type", None)
-    cfg = Qwen3VLVisionConfig(**vc)
-    visual = Qwen3VLVisionModel(cfg)
 
     state: dict[str, torch.Tensor] = {}
     for shard in sorted(model_path.glob("*.safetensors")):
@@ -210,17 +189,138 @@ def load_qwen35_vision_encoder(
             for k in f.keys():
                 if k.startswith("model.visual."):
                     state[k[len("model.visual.") :]] = f.get_tensor(k)
+    return state
+
+
+def _visual_state_from_mmproj_gguf(gguf_path: Path) -> dict[str, torch.Tensor]:
+    """Map llama.cpp clip mmproj (F16) tensors → Qwen3VLVisionModel state_dict keys.
+
+    GGUF stores dims reversed vs torch; reshape with reversed(shape). Weights match the
+    HF Qwen3.5-0.8B vision tower (bit-exact within fp16).
+    """
+    import numpy as np
+    from gguf import GGUFReader
+
+    reader = GGUFReader(str(gguf_path))
+
+    def _tensor(name: str) -> torch.Tensor:
+        for t in reader.tensors:
+            if t.name == name:
+                shape = tuple(int(x) for x in t.shape)
+                arr = np.asarray(t.data).reshape(tuple(reversed(shape)))
+                return torch.from_numpy(arr.copy())
+        raise KeyError(f"missing gguf tensor: {name}")
+
+    state: dict[str, torch.Tensor] = {}
+    # patch embed: two temporal kernels (16,16,3,C) → (C,3,2,16,16)
+    w0 = _tensor("v.patch_embd.weight")
+    w1 = _tensor("v.patch_embd.weight.1")
+    state["patch_embed.proj.weight"] = torch.stack([w0, w1], dim=2)
+    state["patch_embed.proj.bias"] = _tensor("v.patch_embd.bias")
+    state["pos_embed.weight"] = _tensor("v.position_embd.weight")
+
+    # discover block count
+    block_ids = sorted(
+        {
+            int(t.name.split(".")[2])
+            for t in reader.tensors
+            if t.name.startswith("v.blk.") and t.name.split(".")[2].isdigit()
+        }
+    )
+    for i in block_ids:
+        p = f"v.blk.{i}"
+        state[f"blocks.{i}.attn.qkv.weight"] = _tensor(f"{p}.attn_qkv.weight")
+        state[f"blocks.{i}.attn.qkv.bias"] = _tensor(f"{p}.attn_qkv.bias")
+        state[f"blocks.{i}.attn.proj.weight"] = _tensor(f"{p}.attn_out.weight")
+        state[f"blocks.{i}.attn.proj.bias"] = _tensor(f"{p}.attn_out.bias")
+        state[f"blocks.{i}.mlp.linear_fc1.weight"] = _tensor(f"{p}.ffn_up.weight")
+        state[f"blocks.{i}.mlp.linear_fc1.bias"] = _tensor(f"{p}.ffn_up.bias")
+        state[f"blocks.{i}.mlp.linear_fc2.weight"] = _tensor(f"{p}.ffn_down.weight")
+        state[f"blocks.{i}.mlp.linear_fc2.bias"] = _tensor(f"{p}.ffn_down.bias")
+        state[f"blocks.{i}.norm1.weight"] = _tensor(f"{p}.ln1.weight")
+        state[f"blocks.{i}.norm1.bias"] = _tensor(f"{p}.ln1.bias")
+        state[f"blocks.{i}.norm2.weight"] = _tensor(f"{p}.ln2.weight")
+        state[f"blocks.{i}.norm2.bias"] = _tensor(f"{p}.ln2.bias")
+
+    # merger (mm.0 / mm.2) — unused by pre-merger AD, skip if shapes differ
+    try:
+        state["merger.linear_fc1.weight"] = _tensor("mm.0.weight")
+        state["merger.linear_fc1.bias"] = _tensor("mm.0.bias")
+        state["merger.linear_fc2.weight"] = _tensor("mm.2.weight")
+        state["merger.linear_fc2.bias"] = _tensor("mm.2.bias")
+    except KeyError:
+        pass
+    return state
+
+
+def load_qwen35_vision_encoder(
+    model_path: str | Path,
+    device: str = "cuda:0",
+    max_pixels: int = 224 * 224,
+    layers: list[int] | None = None,
+    mmproj_gguf: str | Path | None = None,
+    config_path: str | Path | None = None,
+) -> tuple[EncodeFn, EncodePatchesFn, dict[str, Any]]:
+    """Qwen3.5-0.8B vision tower — multi-layer **pre-merger** patch tokens.
+
+    Spatial merge is skipped for AD maps so resolution stays grid_thw (e.g. 14×14).
+
+    Args:
+      model_path: HF dir (config + optional safetensors) used for vision_config / processor.
+      mmproj_gguf: optional llama.cpp mmproj GGUF (F16). When set, vision weights load from
+        GGUF instead of HF safetensors (quant package vision tower).
+    """
+    import json
+
+    import torch.nn.functional as F
+    from transformers import AutoProcessor, Qwen3VLVisionModel
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLVisionConfig
+
+    model_path = Path(model_path)
+    cfg_src = Path(config_path) if config_path else model_path
+    if not (cfg_src / "config.json").exists() and model_path.name.endswith(".gguf"):
+        raise FileNotFoundError(
+            f"need HF config.json for vision_config; got {cfg_src}. "
+            "Pass config_path=.../Qwen3.5-0.8B"
+        )
+    raw = json.loads((cfg_src / "config.json").read_text(encoding="utf-8"))
+    vc = dict(raw["vision_config"])
+    vc.pop("model_type", None)
+    cfg = Qwen3VLVisionConfig(**vc)
+    visual = Qwen3VLVisionModel(cfg)
+
+    if mmproj_gguf is not None:
+        gguf_path = Path(mmproj_gguf)
+        if gguf_path.is_dir():
+            cands = sorted(gguf_path.glob("*mmproj*.gguf")) + sorted(gguf_path.glob("*.gguf"))
+            if not cands:
+                raise FileNotFoundError(f"no mmproj gguf under {gguf_path}")
+            gguf_path = next((p for p in cands if "mmproj" in p.name.lower()), cands[0])
+        state = _visual_state_from_mmproj_gguf(gguf_path)
+        weight_src = f"mmproj_gguf:{gguf_path.name}"
+        disk_bytes = gguf_path.stat().st_size
+        package_dir = gguf_path.parent
+        package_disk_bytes = sum(p.stat().st_size for p in package_dir.glob("*.gguf"))
+    else:
+        state = _visual_state_from_hf_safetensors(model_path)
+        weight_src = "hf_safetensors"
+        # vision-only nbytes (fair vs mmproj); also keep full HF package size
+        disk_bytes = int(sum(t.numel() * t.element_size() for t in state.values()))
+        package_disk_bytes = sum(p.stat().st_size for p in model_path.glob("*.safetensors"))
+        gguf_path = None
+        package_dir = model_path
+
     missing, unexpected = visual.load_state_dict(state, strict=False)
     # load_state_dict may reintroduce fp32 weights — cast after load (transformers 5.x)
     visual = visual.to(device=device, dtype=torch.bfloat16)
     loader_note = (
-        f"remapped model.visual.* -> Qwen3VLVisionModel; "
+        f"weights={weight_src} -> Qwen3VLVisionModel; "
         f"loaded={len(state)} missing={len(missing)} unexpected={len(unexpected)}; "
         f"AD uses pre-merger tokens"
     )
     visual.eval()
 
-    proc_path = model_path
+    proc_path = cfg_src if (cfg_src / "preprocessor_config.json").exists() or (cfg_src / "processor_config.json").exists() else model_path
     try:
         processor = AutoProcessor.from_pretrained(str(proc_path), trust_remote_code=True)
     except Exception:
@@ -343,8 +443,13 @@ def load_qwen35_vision_encoder(
         flops_g = None
 
     meta = {
-        "backbone": "Qwen3.5-0.8B-vision",
+        "backbone": "Qwen3.5-0.8B-vision" + ("-mmproj-gguf" if mmproj_gguf else ""),
         "model_path": str(model_path),
+        "mmproj_gguf": str(gguf_path) if gguf_path is not None else None,
+        "weight_source": weight_src,
+        "disk_mb": float(disk_bytes) / (1024**2),
+        "package_disk_mb": float(package_disk_bytes) / (1024**2),
+        "package_dir": str(package_dir),
         "max_pixels": max_pixels,
         "params_m": count_params_m(visual),
         "flops_g": flops_g,
@@ -357,4 +462,29 @@ def load_qwen35_vision_encoder(
         "feature_mode": "multi_layer_pre_merger_patch",
         "note": "AD maps use pre-merger tokens (e.g. 14x14), not post-merger 7x7",
     }
+    return encode, encode_patches, meta
+
+
+def load_qwen35_mmproj_gguf(
+    mmproj_gguf: str | Path,
+    *,
+    config_path: str | Path = "/data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B",
+    device: str = "cuda:0",
+    max_pixels: int = 224 * 224,
+    layers: list[int] | None = None,
+    processor_path: str | Path | None = None,
+) -> tuple[EncodeFn, EncodePatchesFn, dict[str, Any]]:
+    """Convenience: load quantized package vision tower from mmproj GGUF (F16)."""
+    cfg_path = Path(config_path)
+    encode, encode_patches, meta = load_qwen35_vision_encoder(
+        cfg_path,
+        device=device,
+        max_pixels=max_pixels,
+        layers=layers,
+        mmproj_gguf=mmproj_gguf,
+        config_path=cfg_path,
+    )
+    # optional alternate processor
+    if processor_path is not None:
+        meta["processor_path"] = str(processor_path)
     return encode, encode_patches, meta

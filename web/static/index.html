@@ -123,7 +123,7 @@
           <span class="sec-no">03</span>
           <div>
             <h2>协同推理演示</h2>
-            <p class="lead">边侧分数 → Qwen3.5 RouteAgent → 网络仿真 → 云端 LLM（可选实时 LoRA）</p>
+            <p class="lead">边侧分数 → Qwen3.5 RouteAgent（默认 GGUF Q4）→ 网络仿真 → 云端 LLM（可选实时 LoRA）</p>
           </div>
         </header>
 
@@ -172,14 +172,14 @@
             </label>
             <label class="check">
               <input type="checkbox" id="demo-route-agent" checked />
-              Use Qwen3.5 RouteAgent
+              Use Qwen3.5 RouteAgent (GGUF Q4)
             </label>
             <label class="check">
               <input type="checkbox" id="demo-live" />
               Live cloud LoRA inference
             </label>
             <button id="demo-run" class="btn primary">Run</button>
-            <button id="demo-load-route" class="btn">Preload RouteAgent</button>
+            <button id="demo-load-route" class="btn">Preload RouteAgent (Q4)</button>
             <button id="demo-load-cloud" class="btn">Preload cloud model</button>
             <p class="hint" id="demo-status">Ready</p>
           </aside>

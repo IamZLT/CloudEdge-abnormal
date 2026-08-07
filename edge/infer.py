@@ -28,6 +28,7 @@ DEFAULT_PATHS = {
     "clip": "/data2/zlt/anomaly_detection_llm/model_card/clip-vit-large-patch14",
     "dinov3": "/data2/zlt/anomaly_detection_llm/model_card/dinov3-vitl16-pretrain-lvd1689m",
     "qwen35": "/data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B",
+    "qwen35_q": str(ROOT / "model_card" / "qwen3.5VL-0.8B-q"),
 }
 
 
@@ -76,12 +77,24 @@ def _infer_patch_gallery(
 
     if method == "qwen35":
         _, encode_patches, meta = load_qwen35_vision_encoder(
-            model_path,
+            model_path or DEFAULT_PATHS["qwen35"],
             device=device,
             max_pixels=int(edge.get("max_pixels") or image_size * image_size),
             layers=layers,
         )
         name = "qwen35_0.8b_vision_mlpatch"
+    elif method in {"qwen35_q", "qwen35_quant", "qwen35_mmproj"}:
+        hf = DEFAULT_PATHS["qwen35"]
+        mmproj = edge.get("mmproj_gguf") or DEFAULT_PATHS["qwen35_q"]
+        _, encode_patches, meta = load_qwen35_vision_encoder(
+            hf,
+            device=device,
+            max_pixels=int(edge.get("max_pixels") or image_size * image_size),
+            layers=layers,
+            mmproj_gguf=mmproj,
+            config_path=hf,
+        )
+        name = "qwen35_0.8b_mmproj_mlpatch"
     elif method == "clip":
         _, encode_patches, meta = load_clip_encoder(
             model_path or DEFAULT_PATHS["clip"], device=device, image_size=image_size, layers=layers
@@ -287,8 +300,8 @@ def main():
     p.add_argument(
         "--method",
         default=None,
-        choices=["qwen35", "clip", "dinov3", "padim"],
-        help="default from config.edge.method (=qwen35)",
+        choices=["qwen35", "qwen35_q", "clip", "dinov3", "padim"],
+        help="default from config.edge.method (=qwen35); qwen35_q = mmproj GGUF vision",
     )
     p.add_argument("--device", default=None)
     p.add_argument("--max-gallery", type=int, default=None)
@@ -323,6 +336,8 @@ def main():
     method = (args.method or edge.get("method") or "qwen35").lower()
     if method in {"qwen35_mlpatch", "qwen", "qwen3.5", "qwen35_vision"}:
         method = "qwen35"
+    if method in {"qwen35_quant", "qwen35_mmproj"}:
+        method = "qwen35_q"
     device = args.device or edge.get("device") or cfg.get("device") or "cuda:0"
     image = Path(args.image)
     if not image.exists():

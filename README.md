@@ -77,20 +77,21 @@ conda activate clip   # 或 base；需 transformers≥4.57 + safetensors
 ## Web 控制台
 
 ```bash
-conda activate clip   # transformers>=5.3（RouteAgent）+ 原有 VLM
+conda activate clip   # llama-cpp-python(CUDA) + transformers；RouteAgent 默认 GGUF Q4
 cd /data2/zlt/code/CloudEdge-abnormal
 CUDA_VISIBLE_DEVICES=0 WEB_VLM_DEVICE=cuda:0 WEB_ROUTE_DEVICE=cuda:0 \
   python -m uvicorn web.app:app --host 0.0.0.0 --port 7860
+# 可选：WEB_ROUTE_BACKEND=hf 回退全量；WEB_ROUTE_GGUF_DIR=... 指定量化包
 ```
 
 浏览器：`http://<host>:7860`
 
 - 总览 / 指标：15 类 B1 / 零样本 / LoRA  
 - **实时网络波形**：Demo 页顶部可选 `good/fair/weak/outage`，RTT/带宽/丢包滚动刷新  
-- 协同演示：边侧分数 → **Qwen3.5 RouteAgent** → 网络仿真 → 云端 LLM；Anomalib 热力图仅作对比  
+- 协同演示：边侧分数 → **Qwen3.5 RouteAgent（默认 GGUF Q4 + mmproj）** → 网络仿真 → 云端 LLM；Anomalib 热力图仅作对比  
 - LLM Cases：`hybrid_lora_8b` 难例复核  
 
-Demo 可勾选「Use Qwen3.5 RouteAgent」；首次建议点 **Preload RouteAgent**。带 `[LLM]` 标记的样本有云端缓存 JSON。
+Demo 可勾选「Use Qwen3.5 RouteAgent (GGUF Q4)」；首次建议点 **Preload RouteAgent (Q4)**。带 `[LLM]` 标记的样本有云端缓存 JSON。
 
 ---
 
@@ -116,9 +117,21 @@ CUDA_VISIBLE_DEVICES=2 python scripts/bench_edge_pixel_viz.py \
   --methods qwen35 --categories all --max-gallery 16 \
   --fusion-temp 0.5 --tag mlpatch16_all15 --shard qwen --skip-viz
 # 对比 CLIP / DINOv3 / PaDiM 见 scripts/bench_edge_pixel_viz.py
+
+# 量化包 mmproj-GGUF vs 未压缩 HF（图像/像素指标 + FLOPs/显存/磁盘）
+# 权重：model_card/qwen3.5VL-0.8B-q（mmproj-F16 + Q4 LLM；AD 只用视觉塔）
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_qwen_quant_compare.py \
+  --categories bottle screw --max-gallery 16 --tag quant_cmp
+# 或：--methods qwen35 qwen35_q 跑 scripts/bench_edge_pixel_viz.py
+
+# RouteAgent：HF bf16 全模 vs GGUF Q4 decoder + mmproj（延迟/显存/解析率）
+# 依赖：pip install llama-cpp-python（GPU 需 GGML_CUDA 编译；见脚本报告备注）
+CUDA_VISIBLE_DEVICES=0 python scripts/bench_route_quant_compare.py \
+  --category bottle --n-samples 8 --tag route_q4
+# 线上切换：configs/default.yaml → collab.route_agent.backend: gguf
 ```
 
-核心代码：`edge/infer.py`、`edge/methods/encoders.py`、`patch_gallery_ad.py`。
+核心代码：`edge/infer.py`、`edge/methods/encoders.py`、`patch_gallery_ad.py`、`src/vlm/route_agent.py`。
 
 ---
 

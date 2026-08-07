@@ -204,8 +204,12 @@ function renderRouteAgent(ra, pathType, netOut) {
       upload_want: upload,
       confidence: ra.confidence,
       source: ra.source,
+      backend: ra.backend || null,
+      weight_source: ra.weight_source || null,
+      gpu_footprint_mb: ra.gpu_footprint_mb ?? null,
       network_profile: ra.network_profile,
       route_latency_ms: ra.latency_ms,
+      peak_mem_mb: ra.peak_mem_mb ?? null,
       net_ok: netOut?.ok ?? null,
       net_fail: netOut?.failed_reason ?? null,
       net_rtt_ms: netOut?.rtt_ms ?? null,
@@ -362,10 +366,16 @@ async function loadCloud() {
 }
 
 async function loadRouteAgent() {
-  $("#demo-status").textContent = "正在加载 RouteAgent（Qwen3.5 全量）…";
+  $("#demo-status").textContent = "正在加载 RouteAgent（GGUF Q4 + mmproj）…";
   try {
     const r = await api("/api/route_agent/load", { method: "POST" });
-    $("#demo-status").textContent = r.ok ? "RouteAgent 已加载" : `加载失败：${r.error}`;
+    if (r.ok) {
+      const be = r.backend || "gguf";
+      const fp = r.gpu_footprint_mb != null ? ` · VRAM≈${Number(r.gpu_footprint_mb).toFixed(0)}MB` : "";
+      $("#demo-status").textContent = `RouteAgent 已加载（${be}${fp}）`;
+    } else {
+      $("#demo-status").textContent = `加载失败：${r.error}`;
+    }
   } catch (e) {
     $("#demo-status").textContent = `RouteAgent 加载失败：${e.message}`;
   }
@@ -526,8 +536,9 @@ async function restoreNetwork() {
 async function health() {
   try {
     const h = await api("/api/health");
+    const raBe = h.route_agent?.backend || (h.route_agent_loaded ? "on" : "off");
     $("#health-line").textContent =
-      `API ok · net=${h.network_profile || "—"} · route_agent=${h.route_agent_loaded} · cloud=${h.cloud_loaded}`;
+      `API ok · net=${h.network_profile || "—"} · route=${h.route_agent_loaded ? raBe : "off"} · cloud=${h.cloud_loaded}`;
   } catch {
     $("#health-line").textContent = "API unreachable";
   }
