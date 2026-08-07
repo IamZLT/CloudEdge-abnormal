@@ -1,5 +1,9 @@
 """Cloud–edge network condition simulator (latency / bandwidth / loss / timeout).
 
+Two modes:
+  1) **Legacy profiles** (good/fair/weak/outage) — static mean + Gaussian jitter
+  2) **Physical geo env** — see ``src/network_env.py`` (distance + temporal dynamics)
+
 Used for accounting-only evaluation (no real sleep). Hard-example uploads that
 fail due to loss or timeout fall back to the edge-local decision.
 """
@@ -73,14 +77,24 @@ PROFILES: dict[str, NetworkProfile] = {
 
 
 def resolve_profile(network_cfg: dict | None = None) -> NetworkProfile:
-    """Build a NetworkProfile from collab.network config dict."""
+    """Build a NetworkProfile from collab.network / live geo snapshot dict."""
     cfg = dict(network_cfg or {})
-    name = str(cfg.get("profile") or "fair").lower()
+    name = str(cfg.get("profile") or cfg.get("name") or "fair").lower()
+    if name in {"geo", "physical", "env"}:
+        # Live snapshot from NetworkEnvironment.to_profile_dict()
+        return NetworkProfile(
+            name="geo",
+            rtt_ms=float(cfg.get("rtt_ms", 80.0)),
+            rtt_jitter_ms=float(cfg.get("rtt_jitter_ms", 10.0)),
+            bandwidth_mbps=float(cfg.get("bandwidth_mbps", 10.0)),
+            loss_prob=float(cfg.get("loss_prob", 0.02)),
+            timeout_ms=float(cfg.get("timeout_ms", 3000.0)),
+        )
     if name == "custom":
         base = NetworkProfile(name="custom")
     else:
         if name not in PROFILES:
-            raise ValueError(f"unknown network profile: {name}; choose {list(PROFILES)}")
+            raise ValueError(f"unknown network profile: {name}; choose {list(PROFILES)}|geo|custom")
         base = PROFILES[name]
     # allow overrides
     return NetworkProfile(
@@ -97,17 +111,68 @@ def resolve_profile(network_cfg: dict | None = None) -> NetworkProfile:
 class NetworkSimulator:
     profile: NetworkProfile = field(default_factory=lambda: PROFILES["fair"])
     seed: int = 42
+    # Optional physical environment binding (preferred for multi-edge fleet)
+    env: Any | None = None
+    edge_id: str | None = None
 
     def __post_init__(self) -> None:
         self._rng = np.random.default_rng(self.seed)
+        self.last_link: dict[str, Any] | None = None
 
     @classmethod
     def from_config(cls, network_cfg: dict | None = None) -> "NetworkSimulator":
         cfg = dict(network_cfg or {})
         return cls(profile=resolve_profile(cfg), seed=int(cfg.get("seed", 42)))
 
+    @classmethod
+    def from_env(cls, env: Any, edge_id: str, seed: int | None = None) -> "NetworkSimulator":
+        """Bind this simulator to a physical NetworkEnvironment edge site."""
+        link = env.sample_link(edge_id)
+        prof = NetworkProfile(
+            name="outage" if link.outage else "geo",
+            rtt_ms=float(link.rtt_ms),
+            rtt_jitter_ms=float(link.rtt_jitter_ms),
+            bandwidth_mbps=float(link.bandwidth_mbps),
+            loss_prob=float(link.loss_prob),
+            timeout_ms=float(link.timeout_ms),
+        )
+        sim = cls(profile=prof, seed=int(seed if seed is not None else getattr(env, "seed", 42)))
+        sim.env = env
+        sim.edge_id = edge_id
+        sim.last_link = link.to_dict()
+        return sim
+
+    def refresh_profile_from_env(self) -> NetworkProfile:
+        """Update ``profile`` from the live geo/temporal link (for UI snapshots)."""
+        if self.env is None or self.edge_id is None:
+            return self.profile
+        link = self.env.sample_link(self.edge_id)
+        self.profile = NetworkProfile(
+            name="outage" if link.outage else "geo",
+            rtt_ms=float(link.rtt_ms),
+            rtt_jitter_ms=float(link.rtt_jitter_ms),
+            bandwidth_mbps=float(link.bandwidth_mbps),
+            loss_prob=float(link.loss_prob),
+            timeout_ms=float(link.timeout_ms),
+        )
+        self.last_link = link.to_dict()
+        return self.profile
+
     def try_upload(self, payload_bytes: int, rng: np.random.Generator | None = None) -> UploadOutcome:
         """Simulate one hard-example upload attempt."""
+        if self.env is not None and self.edge_id is not None:
+            out, link = self.env.try_upload(self.edge_id, int(payload_bytes))
+            self.last_link = link.to_dict()
+            self.profile = NetworkProfile(
+                name="outage" if link.outage else "geo",
+                rtt_ms=float(link.rtt_ms),
+                rtt_jitter_ms=float(link.rtt_jitter_ms),
+                bandwidth_mbps=float(link.bandwidth_mbps),
+                loss_prob=float(link.loss_prob),
+                timeout_ms=float(link.timeout_ms),
+            )
+            return out
+
         g = rng if rng is not None else self._rng
         p = self.profile
         # link drop / outage

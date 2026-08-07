@@ -114,8 +114,9 @@ class RouteDecision:
     reason: str
     latency_ms: float = 0.0
     parse_ok: bool = True
-    source: str = "llm"  # llm | hard_gate | heuristic_fallback
-    raw: str = ""
+    source: str = "llm"  # llm | hard_gate | heuristic_fallback | llm_rules_snapped
+    raw: str = ""  # canonical final JSON (matches upload/reason)
+    raw_model: str = ""  # unmodified model text (may disagree before rules_snap)
     network_profile: str = "fair"
     peak_mem_mb: float | None = None
     include_image: bool = False
@@ -569,13 +570,18 @@ class RouteAgent:
         profile = str(ctx.network_profile or "fair").lower()
         include_image = resolve_include_image(self.vision_mode, include_image=ctx.include_image)
         if self.hard_block_on_outage and profile == "outage":
+            reason = "hard_gate: network outage — stay local"
             return RouteDecision(
                 upload=False,
                 confidence=1.0,
-                reason="hard_gate: network outage — stay local",
+                reason=reason,
                 latency_ms=0.0,
                 parse_ok=True,
                 source="hard_gate",
+                raw=json.dumps(
+                    {"upload": False, "confidence": 1.0, "reason": reason},
+                    ensure_ascii=False,
+                ),
                 network_profile=profile,
                 include_image=False,
                 vision_mode=self.vision_mode,
@@ -597,14 +603,20 @@ class RouteAgent:
         parsed = parse_route_json(raw)
         if not parsed.get("parse_ok") or parsed.get("upload") is None:
             upload = heuristic_upload(ctx)
+            conf = float(parsed.get("confidence") or 0.3)
+            reason = parsed.get("reason") or "heuristic_fallback: parse_failed"
             return RouteDecision(
                 upload=upload,
-                confidence=float(parsed.get("confidence") or 0.3),
-                reason=parsed.get("reason") or "heuristic_fallback: parse_failed",
+                confidence=conf,
+                reason=reason,
                 latency_ms=float(latency_ms),
                 parse_ok=False,
                 source="heuristic_fallback",
-                raw=raw,
+                raw=json.dumps(
+                    {"upload": upload, "confidence": conf, "reason": reason},
+                    ensure_ascii=False,
+                ),
+                raw_model=raw,
                 network_profile=profile,
                 peak_mem_mb=peak,
                 include_image=include_image,
@@ -614,6 +626,7 @@ class RouteAgent:
         upload = bool(parsed["upload"])
         source = "llm"
         reason = str(parsed.get("reason") or "")
+        conf = float(parsed["confidence"])
         # Text / reuse path: AD already summarized the image — keep upload consistent
         # with the documented CONTEXT rules (tiny VLMs often ignore them).
         if (not include_image) and self.enforce_context_rules:
@@ -623,14 +636,20 @@ class RouteAgent:
                 upload = ruled
                 source = "llm_rules_snapped"
 
+        # `raw` always mirrors the *final* decision so UI never shows a conflicting JSON.
+        final_raw = json.dumps(
+            {"upload": upload, "confidence": conf, "reason": reason},
+            ensure_ascii=False,
+        )
         return RouteDecision(
             upload=upload,
-            confidence=float(parsed["confidence"]),
+            confidence=conf,
             reason=reason,
             latency_ms=float(latency_ms),
             parse_ok=True,
             source=source,
-            raw=raw,
+            raw=final_raw,
+            raw_model=raw,
             network_profile=profile,
             peak_mem_mb=peak,
             include_image=include_image,

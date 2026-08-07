@@ -29,8 +29,23 @@ collab:
   cloud_extra_latency_ms: 50.0
   # smoke: limit VLM calls; null = all hard samples
   max_cloud_reviews: 12
+  num_edge_nodes: 3
+  edge_fleet:
+    num_nodes: 3
+    default_categories: [bottle, cable, capsule]
+    default_cities: [Suzhou, Shenzhen, Chengdu]
+    default_access: [fiber_enterprise, broadband, 5g]
+  network_env:
+    enabled: true
+    seed: 42
+    route_stretch: 1.5
+    fiber_km_per_ms: 200.0
+    time_scale: 8.0
+    cloud: {city: Shanghai, name: Cloud-Shanghai}
+    default_edge_cities: [Suzhou, Shenzhen, Chengdu]
+    default_edge_access: [fiber_enterprise, broadband, 5g]
   network:
-    profile: fair   # good|fair|weak|outage|custom
+    profile: geo
     seed: 42
   route_agent:
     enabled: true

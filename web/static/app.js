@@ -10,69 +10,548 @@ async function api(path, opts) {
   const res = await fetch(path, opts);
   if (!res.ok) {
     const t = await res.text();
-    throw new Error(t || res.statusText);
+    let detail = t || res.statusText;
+    try {
+      const j = JSON.parse(t);
+      if (j && j.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+    } catch (_) {
+      /* keep raw */
+    }
+    throw new Error(`${res.status} ${path}: ${detail}`);
   }
   return res.json();
 }
 
+function switchPanel(name) {
+  $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.panel === name));
+  $$(".panel").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
+  const main = document.querySelector("main");
+  if (main) main.classList.toggle("wide", name === "topology");
+  if (name === "topology") {
+    resizeTopoCanvas();
+    pollTopology();
+  }
+  if (name === "demo") pollNetwork();
+}
+
 function setupTabs() {
   $$(".tab").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      $$(".tab").forEach((b) => b.classList.remove("active"));
-      $$(".panel").forEach((p) => p.classList.remove("active"));
-      btn.classList.add("active");
-      $(`#panel-${btn.dataset.panel}`).classList.add("active");
-    });
+    btn.addEventListener("click", () => switchPanel(btn.dataset.panel));
   });
+  $("#goto-topology")?.addEventListener("click", () => switchPanel("topology"));
+  $("#goto-demo")?.addEventListener("click", () => switchPanel("demo"));
+  $("#topo-to-demo")?.addEventListener("click", () => switchPanel("demo"));
+}
+
+/* ---------------- fleet / overview ---------------- */
+
+function renderEdgeFleet(fleet) {
+  const grid = $("#edge-fleet-grid");
+  if (!grid || !fleet) return;
+  const active = fleet.active_id;
+  grid.innerHTML = "";
+  (fleet.nodes || []).forEach((n) => {
+    const art = document.createElement("article");
+    art.className = "edge-node-card" + (n.id === active ? " active" : "");
+    const net = n.network || {};
+    const st = n.stats || {};
+    const dist = net.distance_geo_km != null ? `${Number(net.distance_geo_km).toFixed(0)} km` : "—";
+    art.innerHTML = `
+      <h3>${n.name || n.id}</h3>
+      <p class="edge-meta"><code>${n.id}</code> · ${n.category} · ${n.city || net.city || "—"}</p>
+      <p class="edge-net">${dist} → cloud
+        · prop ${Number(net.prop_rtt_ms || 0).toFixed(1)}ms
+        · RTT ${Number(net.rtt_ms || 0).toFixed(0)}ms
+        · ${Number(net.bandwidth_mbps || 0).toFixed(1)}Mbps</p>
+      <p class="edge-stats">access ${n.access || net.access || "—"}
+        · infer ${st.n_infer ?? 0}
+        · cloud_ok ${st.n_upload_ok ?? 0}
+        · fail ${st.n_upload_fail ?? 0}</p>
+    `;
+    art.addEventListener("click", () => {
+      selectEdgeNode(n.id)
+        .then(() => switchPanel("demo"))
+        .catch((e) => {
+          $("#demo-status").textContent = `切换边缘节点失败：${e.message}`;
+        });
+    });
+    grid.appendChild(art);
+  });
+}
+
+async function fillEdgeNodeSelect(fleet) {
+  const sel = $("#demo-edge-node");
+  if (!sel || !fleet) return;
+  const prev = sel.value;
+  sel.innerHTML = "";
+  (fleet.nodes || []).forEach((n) => {
+    const opt = document.createElement("option");
+    opt.value = n.id;
+    const city = n.city || n.network?.city || "?";
+    const dist =
+      n.network?.distance_geo_km != null ? `${Number(n.network.distance_geo_km).toFixed(0)}km` : "";
+    opt.textContent = `${n.name} · ${city} ${dist} · ${n.category}`;
+    sel.appendChild(opt);
+  });
+  const prefer = fleet.active_id || prev || fleet.nodes?.[0]?.id;
+  if (prefer) sel.value = prefer;
+}
+
+async function loadEdgeFleet() {
+  try {
+    const data = await api("/api/edge_nodes");
+    renderEdgeFleet(data);
+    await fillEdgeNodeSelect(data);
+    return data;
+  } catch (err) {
+    const grid = $("#edge-fleet-grid");
+    if (grid) {
+      grid.innerHTML =
+        `<article class="edge-node-card"><h3>边缘舰队 API 不可用</h3>` +
+        `<p class="edge-meta">${String(err.message || err)}</p>` +
+        `<p class="edge-stats">请重启 Web 服务以加载最新后端（需 /api/edge_nodes）。` +
+        `若开着旧进程（如 :7860），请改用已更新端口或杀掉旧进程后重启。</p></article>`;
+    }
+    throw err;
+  }
+}
+
+async function selectEdgeNode(nodeId) {
+  const fd = new FormData();
+  fd.append("edge_node_id", nodeId);
+  const res = await fetch("/api/edge_nodes/active", { method: "POST", body: fd });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+  const node = data.edge_node;
+  state.selectedEdgeId = node.id;
+  const catSel = $("#demo-cat");
+  if (catSel && node?.category) {
+    const has = [...catSel.options].some((o) => o.value === node.category);
+    if (has && catSel.value !== node.category) {
+      catSel.value = node.category;
+      await loadDemoImages();
+    }
+  }
+  await loadEdgeFleet();
+  await pollNetwork();
+  if ($("#demo-status")) {
+    $("#demo-status").textContent =
+      `活动边缘节点 ${node?.name || nodeId} · ${node?.city || ""} · RTT ${Number(data.network?.rtt_ms || 0).toFixed(0)}ms`;
+  }
+  return data;
 }
 
 async function loadOverview() {
   const s = await api("/api/summary");
-  $("#m-b1").textContent = fmt(s.means.B1_f1);
-  $("#m-zs").textContent = fmt(s.means.ZS8B_f1);
-  $("#m-l8").textContent = fmt(s.means.Lora8B_f1);
-  $("#m-l4").textContent = fmt(s.means.Lora4B_f1);
-  $("#stack-edge").textContent = s.stack.edge;
-  $("#stack-cloud").textContent = s.stack.cloud;
-  $("#stack-collab").textContent = s.stack.collab;
-
-  const tbody = $("#metrics-table tbody");
-  tbody.innerHTML = "";
-  (s.categories || []).forEach((r) => {
-    const d = (r.Lora8B_f1 ?? 0) - (r.B1_f1 ?? 0);
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${r.category}</td>
-      <td>${r.n ?? "—"}</td>
-      <td>${fmt(r.B1_f1)}</td>
-      <td>${fmt(r.ZS8B_f1)}</td>
-      <td>${fmt(r.Lora4B_f1)}</td>
-      <td>${fmt(r.Lora8B_f1)}</td>
-      <td class="${d >= 0 ? "delta-pos" : "delta-neg"}">${d >= 0 ? "+" : ""}${fmt(d)}</td>
-    `;
-    tbody.appendChild(tr);
-  });
+  if ($("#stack-edge")) $("#stack-edge").textContent = s.stack.edge;
+  if ($("#stack-cloud")) $("#stack-cloud").textContent = s.stack.cloud;
+  if ($("#stack-collab")) $("#stack-collab").textContent = s.stack.collab;
 }
 
 async function fillCategorySelects() {
   const { categories } = await api("/api/categories");
   const demo = $("#demo-cat");
-  const cases = $("#case-cat");
+  if (!demo) return;
   demo.innerHTML = "";
-  cases.innerHTML = "";
   categories.forEach((c) => {
     demo.insertAdjacentHTML("beforeend", `<option value="${c}">${c}</option>`);
-    cases.insertAdjacentHTML("beforeend", `<option value="${c}">${c}</option>`);
   });
-  const prefer = categories.includes("screw") ? "screw" : categories[0];
-  demo.value = prefer;
-  cases.value = prefer;
+  demo.value = categories.includes("bottle") ? "bottle" : categories[0];
   await loadDemoImages();
-  await loadCases();
 }
 
+/* ---------------- topology viz ---------------- */
+
+const state = {
+  selectedEdgeId: null,
+  topo: null, // last env summary
+  fleet: null,
+  hitRegions: [], // {id, x, y, r}
+  localFile: null,
+  localObjectUrl: null,
+};
+
+function resizeTopoCanvas() {
+  const canvas = $("#topo-canvas");
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  const w = Math.max(640, Math.floor(wrap.clientWidth - 4));
+  const h = Math.max(420, Math.min(620, Math.floor(w * 0.52)));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+}
+
+function geoBearing(cloud, lat, lon) {
+  /** Forward azimuth cloud→site (radians), screen-friendly (0 = east, + = clockwise-ish via atan2). */
+  const dLon = ((lon - cloud.lon) * Math.PI) / 180;
+  const la1 = (cloud.lat * Math.PI) / 180;
+  const la2 = (lat * Math.PI) / 180;
+  const y = Math.sin(dLon) * Math.cos(la2);
+  const x = Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dLon);
+  return Math.atan2(y, x);
+}
+
+function spreadAngles(rawBearings) {
+  /**
+   * Keep geographic order around the circle, but enforce equal angular slots
+   * so nodes never stay collinear (which stacks labels on one ray).
+   */
+  const n = rawBearings.length;
+  if (n === 0) return [];
+  if (n === 1) return [-Math.PI / 2];
+
+  const indexed = rawBearings.map((b, i) => ({ b, i }));
+  indexed.sort((a, b) => a.b - b.b);
+
+  // Even fan; start slightly above west so 3-node layouts look balanced
+  const gap = (2 * Math.PI) / n;
+  const start = -Math.PI / 2 - gap * 0.5;
+  const out = new Array(n);
+  indexed.forEach((item, k) => {
+    out[item.i] = start + k * gap;
+  });
+  return out;
+}
+
+function projectSites(cloud, links, W, H) {
+  /** Radial layout: radius ∝ geo distance; angles de-collided by order-preserving fan. */
+  const cx = W * 0.5;
+  const cy = H * 0.5;
+  const maxR = Math.min(W, H) * 0.36;
+  const minR = Math.min(W, H) * 0.16;
+  const entries = Object.entries(links || {});
+  let maxDist = 1;
+  for (const [, L] of entries) {
+    maxDist = Math.max(maxDist, Number(L.distance_geo_km) || 1);
+  }
+
+  const bearings = entries.map(([eid, L], i) => {
+    const lat = L.lat;
+    const lon = L.lon;
+    if (lat != null && lon != null && cloud && cloud.lat != null && cloud.lon != null) {
+      return geoBearing(cloud, lat, lon);
+    }
+    return (i / Math.max(1, entries.length)) * Math.PI * 2;
+  });
+  const angles = spreadAngles(bearings);
+
+  const nodes = entries.map(([eid, L], i) => {
+    const dist = Number(L.distance_geo_km) || 1;
+    // sqrt scale: near edges still readable, far edges push out
+    const r = minR + Math.sqrt(dist / maxDist) * maxR;
+    const angle = angles[i];
+    return {
+      id: eid,
+      x: cx + r * Math.cos(angle),
+      y: cy + r * Math.sin(angle),
+      r: 16 + Math.min(10, dist / 250),
+      angle,
+      link: L,
+      labelSide: i % 2 === 0 ? 1 : -1,
+    };
+  });
+  return { cx, cy, nodes, maxDist, minR, maxR };
+}
+
+function linkQualityColor(link) {
+  if (link.outage || link.profile === "outage") return "#b42318";
+  const rtt = Number(link.rtt_ms) || 0;
+  if (rtt < 25) return "#1f7a4c";
+  if (rtt < 60) return "#0f5c6e";
+  if (rtt < 120) return "#9a6700";
+  return "#b42318";
+}
+
+function drawTopology() {
+  const canvas = $("#topo-canvas");
+  if (!canvas || !state.topo) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // soft radial background
+  const g = ctx.createRadialGradient(W / 2, H / 2, 20, W / 2, H / 2, Math.max(W, H) * 0.55);
+  g.addColorStop(0, "#f4fafb");
+  g.addColorStop(1, "#eef1f4");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  const cloud = state.topo.cloud;
+  const links = state.topo.links || {};
+  // attach lat/lon from fleet if available
+  const fleetNodes = state.fleet?.nodes || [];
+  for (const n of fleetNodes) {
+    if (links[n.id] && n.site) {
+      links[n.id].lat = n.site.lat;
+      links[n.id].lon = n.site.lon;
+    }
+  }
+
+  const { cx, cy, nodes, maxDist, minR, maxR } = projectSites(cloud, links, W, H);
+  state.hitRegions = [];
+
+  // distance rings (match sqrt radius scale roughly at 0.25 / 0.5 / 1.0 of maxDist)
+  ctx.strokeStyle = "rgba(15, 92, 110, 0.12)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 6]);
+  for (const frac of [0.25, 0.5, 1.0]) {
+    const rr = minR + Math.sqrt(frac) * maxR;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rr, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#5b6775";
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.fillText(`≈${(maxDist * 0.25).toFixed(0)} km`, cx + 10, cy - (minR + Math.sqrt(0.25) * maxR));
+  ctx.fillText(`≈${maxDist.toFixed(0)} km`, cx + 10, cy - (minR + maxR));
+
+  // links first (under nodes)
+  for (const n of nodes) {
+    const L = n.link;
+    const col = linkQualityColor(L);
+    const out = L.outage || L.profile === "outage";
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(n.x, n.y);
+    ctx.strokeStyle = out ? "rgba(180,35,24,0.55)" : col;
+    ctx.lineWidth = out ? 2 : 2.5;
+    if (out) ctx.setLineDash([6, 5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // link labels — along ray but offset perpendicular so they never sit on a nearer node
+  for (const n of nodes) {
+    const L = n.link;
+    const out = L.outage || L.profile === "outage";
+    const label = out
+      ? "OUTAGE"
+      : `${Number(L.rtt_ms).toFixed(0)}ms · ${Number(L.bandwidth_mbps).toFixed(0)}Mb · ${(Number(L.loss_prob) * 100).toFixed(1)}%`;
+    ctx.font = "11px ui-monospace, monospace";
+    const tw = ctx.measureText(label).width;
+    const dx = n.x - cx;
+    const dy = n.y - cy;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    // place label at 55% of the segment, then nudge sideways
+    const along = 0.55;
+    const side = n.labelSide || 1;
+    const pad = 18;
+    let mx = cx + dx * along + (-uy) * pad * side;
+    let my = cy + dy * along + ux * pad * side;
+    // keep box inside canvas
+    mx = Math.max(tw / 2 + 8, Math.min(W - tw / 2 - 8, mx));
+    my = Math.max(14, Math.min(H - 14, my));
+
+    ctx.fillStyle = "rgba(255,255,255,0.96)";
+    ctx.strokeStyle = "rgba(180,190,200,0.95)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.rect(mx - tw / 2 - 6, my - 10, tw + 12, 20);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = out ? "#b42318" : "#1b2430";
+    ctx.textAlign = "center";
+    ctx.fillText(label, mx, my + 4);
+    ctx.textAlign = "left";
+  }
+
+  // cloud hub
+  ctx.beginPath();
+  ctx.arc(cx, cy, 30, 0, Math.PI * 2);
+  ctx.fillStyle = "#0f5c6e";
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.font = "600 12px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("CLOUD", cx, cy + 4);
+  ctx.fillStyle = "#1b2430";
+  ctx.font = "600 13px serif";
+  ctx.fillText(cloud?.city || cloud?.name || "Cloud", cx, cy + 48);
+  ctx.textAlign = "left";
+
+  // edge nodes (on top)
+  for (const n of nodes) {
+    const selected = n.id === state.selectedEdgeId;
+    const L = n.link;
+    const out = L.outage || L.profile === "outage";
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+    ctx.fillStyle = selected ? "#e6f2f4" : "#fff";
+    ctx.fill();
+    ctx.lineWidth = selected ? 3 : 2;
+    ctx.strokeStyle = out ? "#b42318" : "#0f5c6e";
+    ctx.stroke();
+    ctx.fillStyle = "#1b2430";
+    ctx.font = "600 12px sans-serif";
+    ctx.textAlign = "center";
+    // put city label outside radially so it never sits on the link toward cloud
+    const lx = n.x + Math.cos(n.angle) * (n.r + 14);
+    const ly = n.y + Math.sin(n.angle) * (n.r + 14);
+    ctx.fillText(L.city || n.id, lx, ly);
+    ctx.font = "10px ui-monospace, monospace";
+    ctx.fillStyle = "#5b6775";
+    ctx.fillText(`${Number(L.distance_geo_km).toFixed(0)} km`, lx, ly + 12);
+    ctx.textAlign = "left";
+    state.hitRegions.push({ id: n.id, x: n.x, y: n.y, r: n.r + 8 });
+  }
+}
+
+function renderTopoSide(fleet, env) {
+  const list = $("#topo-link-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const nodes = fleet?.nodes || [];
+  nodes
+    .slice()
+    .sort(
+      (a, b) =>
+        (a.network?.distance_geo_km || 0) - (b.network?.distance_geo_km || 0)
+    )
+    .forEach((n) => {
+      const net = n.network || {};
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className =
+        "topo-link-item" + (n.id === state.selectedEdgeId ? " active" : "");
+      const out = net.profile === "outage" || net.outage;
+      el.innerHTML = `
+        <div class="tli-head">
+          <strong>${n.city || net.city || n.id}</strong>
+          <span class="tli-chip ${out ? "bad" : "ok"}">${out ? "outage" : "up"}</span>
+        </div>
+        <div class="tli-meta">${n.id} · ${n.category} · ${n.access || net.access || "—"}</div>
+        <div class="tli-stats">
+          <span>${Number(net.distance_geo_km || 0).toFixed(0)} km</span>
+          <span>prop ${Number(net.prop_rtt_ms || 0).toFixed(1)}ms</span>
+          <span>RTT ${Number(net.rtt_ms || 0).toFixed(0)}ms</span>
+          <span>${Number(net.bandwidth_mbps || 0).toFixed(1)} Mb</span>
+          <span>loss ${(Number(net.loss_prob || 0) * 100).toFixed(1)}%</span>
+          <span>cong ${(Number(net.congestion || 0) + Number(net.diurnal || 0) + Number(net.burst || 0)).toFixed(2)}</span>
+        </div>
+      `;
+      el.addEventListener("click", () => {
+        state.selectedEdgeId = n.id;
+        selectEdgeNode(n.id).catch(() => {});
+        updateTopoSelected(n);
+        drawTopology();
+        renderTopoSide(state.fleet, state.topo);
+      });
+      list.appendChild(el);
+    });
+
+  const cloudLabel = $("#topo-cloud-label");
+  if (cloudLabel && env?.cloud) {
+    cloudLabel.textContent = `Cloud · ${env.cloud.city || env.cloud.name} (${env.cloud.lat?.toFixed?.(2)}, ${env.cloud.lon?.toFixed?.(2)})`;
+  }
+}
+
+function updateTopoSelected(node) {
+  const pre = $("#topo-selected-json");
+  if (!pre) return;
+  if (!node) {
+    pre.textContent = "点击图中边缘节点";
+    return;
+  }
+  const net = node.network || {};
+  pre.textContent = JSON.stringify(
+    {
+      id: node.id,
+      name: node.name,
+      city: node.city || net.city,
+      category: node.category,
+      access: node.access || net.access,
+      distance_geo_km: net.distance_geo_km,
+      distance_fiber_km: net.distance_fiber_km,
+      prop_rtt_ms: net.prop_rtt_ms,
+      rtt_ms: net.rtt_ms,
+      bandwidth_mbps: net.bandwidth_mbps,
+      loss_prob: net.loss_prob,
+      congestion: net.congestion,
+      diurnal: net.diurnal,
+      burst: net.burst,
+      outage: net.outage || net.profile === "outage",
+      stats: node.stats,
+    },
+    null,
+    2
+  );
+}
+
+async function pollTopology() {
+  try {
+    const [fleet, env] = await Promise.all([api("/api/edge_nodes"), api("/api/network/env")]);
+    state.fleet = fleet;
+    if (env.enabled) {
+      // merge live network from fleet nodes into env.links for drawing
+      const links = { ...(env.links || {}) };
+      for (const n of fleet.nodes || []) {
+        links[n.id] = { ...(links[n.id] || {}), ...(n.network || {}), city: n.city || n.network?.city };
+      }
+      state.topo = { ...env, links };
+    } else {
+      // synthesize from fleet snapshots
+      const links = {};
+      for (const n of fleet.nodes || []) links[n.id] = { ...(n.network || {}), city: n.city };
+      state.topo = {
+        cloud: { city: "Cloud", lat: 31.23, lon: 121.47 },
+        links,
+      };
+    }
+    if (!state.selectedEdgeId) state.selectedEdgeId = fleet.active_id;
+    const sel = (fleet.nodes || []).find((n) => n.id === state.selectedEdgeId);
+    updateTopoSelected(sel);
+    renderTopoSide(fleet, state.topo);
+    resizeTopoCanvas();
+    drawTopology();
+    renderEdgeFleet(fleet);
+    await fillEdgeNodeSelect(fleet);
+  } catch {
+    /* ignore */
+  }
+}
+
+function bindTopoCanvas() {
+  const canvas = $("#topo-canvas");
+  if (!canvas) return;
+  canvas.addEventListener("click", (ev) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = ((ev.clientX - rect.left) / rect.width) * canvas.width;
+    const y = ((ev.clientY - rect.top) / rect.height) * canvas.height;
+    let hit = null;
+    for (const h of state.hitRegions) {
+      const d = Math.hypot(x - h.x, y - h.y);
+      if (d <= h.r) hit = h;
+    }
+    if (!hit) return;
+    state.selectedEdgeId = hit.id;
+    selectEdgeNode(hit.id)
+      .then(() => {
+        const n = (state.fleet?.nodes || []).find((x) => x.id === hit.id);
+        updateTopoSelected(n);
+        drawTopology();
+        renderTopoSide(state.fleet, state.topo);
+      })
+      .catch(() => {});
+  });
+  window.addEventListener("resize", () => {
+    if ($("#panel-topology")?.classList.contains("active")) {
+      resizeTopoCanvas();
+      drawTopology();
+    }
+  });
+}
+
+/* ---------------- demo (single node) ---------------- */
+
 async function loadDemoImages() {
-  const cat = $("#demo-cat").value;
+  const cat = $("#demo-cat")?.value;
+  if (!cat) return;
   const data = await api(`/api/images?category=${encodeURIComponent(cat)}&limit=40`);
   const sel = $("#demo-img");
   sel.innerHTML = "";
@@ -86,63 +565,89 @@ async function loadDemoImages() {
   updatePreview();
 }
 
-function renderLlm(cloud) {
-  const badge = $("#llm-badge");
-  const rawEl = $("#out-cloud");
-  if (!cloud || cloud.skipped) {
-    badge.textContent = cloud?.skipped ? "skipped" : "no output";
-    badge.className = "llm-badge empty";
-    $("#llm-decision").textContent = "—";
-    $("#llm-conf").textContent = "—";
-    $("#llm-type").textContent = "—";
-    $("#llm-reason").textContent = cloud?.skipped
-      ? "边侧置信，未上云（LOCAL）。可勾选 Live cloud 强制调用。"
-      : "当前样本无云端 LLM 缓存。请选择带 [LLM] 标记的图像，或勾选 Live cloud LoRA。";
-    rawEl.textContent = "";
+function clearLocalUpload() {
+  const input = $("#demo-file");
+  if (input) input.value = "";
+  state.localFile = null;
+  state.localObjectUrl = revokeLocalPreview(state.localObjectUrl);
+  const nameEl = $("#demo-file-name");
+  if (nameEl) nameEl.textContent = "未选择 · 上传后优先使用";
+  const clr = $("#demo-file-clear");
+  if (clr) clr.disabled = true;
+  const imgSel = $("#demo-img");
+  if (imgSel) imgSel.disabled = false;
+  $(".side-panel")?.classList.remove("has-upload");
+  updatePreview();
+}
+
+function revokeLocalPreview(url) {
+  if (url) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
+function onLocalFileChange() {
+  const input = $("#demo-file");
+  const file = input && input.files && input.files[0] ? input.files[0] : null;
+  state.localObjectUrl = revokeLocalPreview(state.localObjectUrl);
+  state.localFile = file;
+  const nameEl = $("#demo-file-name");
+  const clr = $("#demo-file-clear");
+  const imgSel = $("#demo-img");
+  if (!file) {
+    if (nameEl) nameEl.textContent = "未选择 · 上传后优先使用";
+    if (clr) clr.disabled = true;
+    if (imgSel) imgSel.disabled = false;
+    $(".side-panel")?.classList.remove("has-upload");
+    updatePreview();
     return;
   }
-  const decision = cloud.decision || "—";
-  badge.textContent = decision;
-  badge.className = `llm-badge ${String(decision).toUpperCase() === "NG" ? "ng" : "ok"}`;
-  $("#llm-decision").textContent = decision;
-  $("#llm-conf").textContent =
-    cloud.confidence === undefined || cloud.confidence === null
-      ? "—"
-      : Number(cloud.confidence).toFixed(2);
-  $("#llm-type").textContent = cloud.defect_type || "—";
-  $("#llm-reason").textContent = cloud.reason || "(no reason)";
-  let raw = cloud.raw;
-  if (!raw) {
-    raw = JSON.stringify(
-      {
-        decision: cloud.decision,
-        confidence: cloud.confidence,
-        defect_type: cloud.defect_type,
-        reason: cloud.reason,
-      },
-      null,
-      2
-    );
+  const okType = /^image\/(png|jpeg|jpg|bmp|webp)$/i.test(file.type) || /\.(png|jpe?g|bmp|webp)$/i.test(file.name);
+  if (!okType) {
+    if (nameEl) nameEl.textContent = "仅支持 png / jpg / bmp / webp";
+    clearLocalUpload();
+    return;
   }
-  rawEl.textContent = raw;
+  state.localObjectUrl = URL.createObjectURL(file);
+  if (nameEl) nameEl.textContent = `${file.name} · ${(file.size / 1024).toFixed(1)} KB`;
+  if (clr) clr.disabled = false;
+  if (imgSel) imgSel.disabled = true;
+  $(".side-panel")?.classList.add("has-upload");
+  updatePreview();
 }
 
 function updatePreview() {
-  const path = $("#demo-img").value;
   const img = $("#demo-preview");
+  const cap = $("#demo-preview-cap");
+  if (!img) return;
+  if (state.localFile && state.localObjectUrl) {
+    img.src = state.localObjectUrl;
+    if (cap) cap.textContent = `本地上传 · ${state.localFile.name}`;
+    renderViz(null);
+    return;
+  }
+  const path = $("#demo-img")?.value;
   if (!path) {
     img.removeAttribute("src");
+    if (cap) cap.textContent = "Selected sample";
     return;
   }
   img.src = `/api/image?path=${encodeURIComponent(path)}`;
-  // clear previous maps until Run
+  if (cap) cap.textContent = "Dataset sample";
   renderViz(null);
 }
 
-function renderViz(viz) {
+function renderViz(viz, pathType) {
   const edgeFig = $("#viz-edge")?.closest("figure");
   const cloudFig = $("#viz-cloud")?.closest("figure");
+  const grid = $("#demo-viz");
   const status = $("#viz-status");
+  const wentCloud = pathType === "CLOUD_REVIEW";
   const setFig = (imgId, fig, url) => {
     const img = $(imgId);
     if (!img || !fig) return;
@@ -154,50 +659,101 @@ function renderViz(viz) {
       img.removeAttribute("src");
     }
   };
+  if (cloudFig) cloudFig.classList.toggle("is-hidden", !wentCloud);
+  if (grid) grid.classList.toggle("edge-only", !wentCloud);
+
   if (!viz) {
     setFig("#viz-edge", edgeFig, null);
     setFig("#viz-cloud", cloudFig, null);
-    if (status) {
-      status.textContent =
-        "热力图来自 Anomalib，不是 Qwen-VL。云端 VLM 只输出下方 JSON（decision / reason）。";
-    }
+    if (status) status.textContent = "—";
     return;
   }
   setFig("#viz-edge", edgeFig, viz.edge_strip || null);
-  setFig("#viz-cloud", cloudFig, viz.cloud_strip || null);
+  setFig("#viz-cloud", cloudFig, wentCloud ? viz.cloud_strip || null : null);
   if (status) {
+    if (!wentCloud) {
+      status.textContent = "未上云：仅展示边侧结果，不显示云端热力图 / Cloud LLM。";
+      return;
+    }
     const parts = [];
-    if (viz.edge_strip) parts.push("边侧 PaDiM 热力图");
-    if (viz.cloud_strip) parts.push("重型 PatchCore 热力图（对比用，非 VLM）");
-    if (viz.gt_mask) parts.push("GT mask");
+    if (viz.edge_strip) parts.push("边侧热力图");
+    if (viz.cloud_strip) parts.push("PatchCore 对比图");
     status.textContent = parts.length
-      ? `${parts.join(" · ")}。VLM 结果见下方 Cloud LLM Output。`
-      : "该样本暂无 Anomalib 可视化缓存；VLM 仍可能有 JSON 输出。";
+      ? `${parts.join(" · ")}。云端 VLM 见下方 Cloud LLM。`
+      : "已上云，但暂无 Anomalib 可视化缓存；见下方 Cloud LLM JSON。";
   }
+}
+
+function renderLlm(cloud, pathType) {
+  const panel = $("#llm-panel");
+  const badge = $("#llm-badge");
+  const rawEl = $("#out-cloud");
+  const wentCloud = pathType === "CLOUD_REVIEW";
+  if (panel) panel.classList.toggle("is-hidden", !wentCloud);
+  if (!badge || !rawEl) return;
+  if (!wentCloud || !cloud || cloud.skipped) {
+    badge.textContent = !wentCloud ? "local" : cloud?.skipped ? "skipped" : "no output";
+    badge.className = "llm-badge empty";
+    $("#llm-decision").textContent = "—";
+    $("#llm-conf").textContent = "—";
+    $("#llm-type").textContent = "—";
+    $("#llm-reason").textContent = !wentCloud
+      ? "本次路由为本地，不调用云端。"
+      : cloud?.skipped
+        ? cloud.reason || "已路由上云，但本次无云端输出（可开 Live cloud）。"
+        : "无云端输出。";
+    rawEl.textContent = "";
+    return;
+  }
+  const decision = cloud.decision || "—";
+  badge.textContent = decision;
+  badge.className = `llm-badge ${String(decision).toUpperCase() === "NG" ? "ng" : "ok"}`;
+  $("#llm-decision").textContent = decision;
+  $("#llm-conf").textContent =
+    cloud.confidence == null ? "—" : Number(cloud.confidence).toFixed(2);
+  $("#llm-type").textContent = cloud.defect_type || "—";
+  $("#llm-reason").textContent = cloud.reason || "(no reason)";
+  rawEl.textContent =
+    cloud.raw ||
+    JSON.stringify(
+      {
+        decision: cloud.decision,
+        confidence: cloud.confidence,
+        defect_type: cloud.defect_type,
+        reason: cloud.reason,
+      },
+      null,
+      2
+    );
 }
 
 function renderRouteAgent(ra, pathType, netOut) {
   const badge = $("#route-llm-badge");
   const rawEl = $("#out-route-raw");
+  if (!badge) return;
   if (!ra) {
     badge.textContent = "idle";
     badge.className = "llm-badge empty";
-    $("#route-llm-reason").textContent = "尚未运行路由智能体。";
-    rawEl.textContent = "";
+    $("#route-llm-reason").textContent = "尚未运行。";
+    if (rawEl) rawEl.textContent = "";
     $("#out-route").textContent = "—";
     return;
   }
   const upload = !!ra.upload;
   badge.textContent = upload ? "upload" : "local";
   badge.className = `llm-badge ${upload ? "ng" : "ok"}`;
-  $("#route-llm-reason").textContent = ra.reason || "(no reason)";
-  rawEl.textContent =
-    (ra.raw && String(ra.raw).trim()) ||
-    JSON.stringify(
-      { upload: ra.upload, confidence: ra.confidence, reason: ra.reason, source: ra.source },
-      null,
-      2
-    );
+  // Show final decision only (after rules_snap); hide model draft mismatches.
+  let reason = ra.reason || "(no reason)";
+  reason = reason.replace(/\s*\|\s*rules_snap:[^|]*/g, "").trim();
+  $("#route-llm-reason").textContent = reason;
+  const finalJson = {
+    upload: ra.upload,
+    confidence: ra.confidence,
+    reason,
+  };
+  if (rawEl) {
+    rawEl.textContent = JSON.stringify(finalJson, null, 2);
+  }
   $("#out-route").textContent = JSON.stringify(
     {
       path: pathType,
@@ -205,11 +761,8 @@ function renderRouteAgent(ra, pathType, netOut) {
       confidence: ra.confidence,
       source: ra.source,
       backend: ra.backend || null,
-      weight_source: ra.weight_source || null,
-      gpu_footprint_mb: ra.gpu_footprint_mb ?? null,
       network_profile: ra.network_profile,
       route_latency_ms: ra.latency_ms,
-      peak_mem_mb: ra.peak_mem_mb ?? null,
       net_ok: netOut?.ok ?? null,
       net_fail: netOut?.failed_reason ?? null,
       net_rtt_ms: netOut?.rtt_ms ?? null,
@@ -226,18 +779,25 @@ async function runDemo() {
   const path = $("#demo-img").value;
   const live = $("#demo-live").checked;
   const useAgent = $("#demo-route-agent")?.checked ?? true;
-  status.textContent = useAgent
-    ? "运行中（RouteAgent 可能首次加载较慢）…"
-    : live
-      ? "运行中（可能加载云端模型）…"
-      : "读取边侧分数 / 路由…";
+  const localFile = state.localFile;
+  if (!localFile && !path) {
+    status.textContent = "请选择数据集图像，或上传本地图片";
+    return;
+  }
+  status.textContent = localFile ? `运行中（上传 ${localFile.name}）…` : "运行中…";
   $("#demo-run").disabled = true;
   try {
+    const edgeNodeId = $("#demo-edge-node")?.value || state.selectedEdgeId || "";
     const fd = new FormData();
     fd.append("category", cat);
-    fd.append("image_path", path);
     fd.append("live_cloud", live ? "true" : "false");
     fd.append("use_route_agent", useAgent ? "true" : "false");
+    if (edgeNodeId) fd.append("edge_node_id", edgeNodeId);
+    if (localFile) {
+      fd.append("file", localFile, localFile.name);
+    } else {
+      fd.append("image_path", path);
+    }
     const res = await fetch("/api/demo", { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
@@ -254,37 +814,40 @@ async function runDemo() {
           null,
           2
         )
-      : "未找到预计算边侧分数（可换数据集内图像，或开实时云端）";
+      : localFile
+        ? "本地上传图：无预计算边侧分数，RouteAgent 使用默认 CONTEXT；可开 Live cloud 做云端判读"
+        : "未找到预计算边侧分数（可换图像或开 Live cloud）";
 
-    renderViz(data.viz || null);
+    renderViz(data.viz || null, data.route);
     renderRouteAgent(data.route_agent, data.route, data.network_outcome);
-
-    const cloud =
-      data.cloud_live && !data.cloud_live.skipped
-        ? data.cloud_live
-        : data.cached_case?.cloud || data.cloud_live;
-    renderLlm(cloud);
+    // Only show cloud LLM when this run actually routed to cloud.
+    renderLlm(data.cloud_live, data.route);
 
     const final = data.final_decision || data.cached_case?.final || edge?.edge_pred || "—";
+    const net = data.network || {};
     $("#out-final").textContent = JSON.stringify(
       {
-        gt: data.cached_case?.gt,
+        edge_node: data.edge_node?.id || edgeNodeId,
+        city: data.edge_node?.city || net.city,
+        distance_geo_km: net.distance_geo_km,
+        prop_rtt_ms: net.prop_rtt_ms,
+        rtt_ms: net.rtt_ms,
+        bandwidth_mbps: net.bandwidth_mbps,
         path: data.route,
-        network_profile: data.network?.profile || data.route_agent?.network_profile,
-        live: live,
-        use_route_agent: useAgent,
-        latency_ms: cloud?.latency_ms,
+        upload_want: data.upload_want,
+        live,
       },
       null,
       2
     );
     $("#out-decision").textContent = String(final);
+    const cloud = data.cloud_live;
     status.textContent =
-      `完成 · ${data.route || "—"} · final=${final}` +
-      (data.route_agent?.source ? ` · route=${data.route_agent.source}` : "") +
+      `完成 · ${data.edge_node?.city || data.edge_node?.name || edgeNodeId} · ${data.route || "—"} · final=${final}` +
       (cloud && !cloud.skipped ? " · cloud LLM" : "");
-    // refresh waveform after demo upload probe
+    await loadEdgeFleet();
     pollNetwork();
+    pollTopology();
   } catch (e) {
     status.textContent = `失败：${e.message}`;
     $("#out-final").textContent = e.message;
@@ -293,212 +856,136 @@ async function runDemo() {
   }
 }
 
-async function loadCases() {
-  const cat = $("#case-cat").value;
-  const grid = $("#case-grid");
-  grid.innerHTML = "<p class='hint'>加载中…</p>";
-  try {
-    const data = await api(`/api/cases?category=${encodeURIComponent(cat)}&limit=18`);
-    grid.innerHTML = "";
-    if (!data.cases.length) {
-      grid.innerHTML = "<p class='hint'>该类暂无案例</p>";
-      return;
-    }
-    data.cases.forEach((c) => {
-      const el = document.createElement("article");
-      el.className = "case";
-      const cloud = c.cloud;
-      const img = document.createElement("img");
-      img.loading = "lazy";
-      img.alt = c.name;
-      // Prefer edge heatmap strip when available
-      img.src = c.viz?.edge_strip || `/api/image?path=${encodeURIComponent(c.path)}`;
-      const body = document.createElement("div");
-      body.className = "body";
-      const tags = document.createElement("div");
-      tags.className = "tags";
-      tags.innerHTML = `
-        <span class="tag">GT ${c.gt}</span>
-        <span class="tag ${c.edge_pred === "NG" ? "ng" : "ok"}">Edge ${c.edge_pred ?? "—"}</span>
-        <span class="tag ${c.final === "NG" ? "ng" : "ok"}">Final ${c.final ?? "—"}</span>
-        ${c.path_type === "CLOUD_REVIEW" ? '<span class="tag cloud">CLOUD</span>' : '<span class="tag">LOCAL</span>'}
-        ${c.viz?.edge_strip ? '<span class="tag cloud">MAP</span>' : ""}
-      `;
-      const p = document.createElement("p");
-      p.textContent = cloud
-        ? `${cloud.defect_type || "—"} · ${cloud.reason || ""}`
-        : "本地路径（未上云）";
-      body.appendChild(tags);
-      body.appendChild(p);
-      if (cloud) {
-        const pre = document.createElement("pre");
-        pre.textContent =
-          cloud.raw ||
-          JSON.stringify(
-            {
-              decision: cloud.decision,
-              confidence: cloud.confidence,
-              defect_type: cloud.defect_type,
-              reason: cloud.reason,
-            },
-            null,
-            2
-          );
-        body.appendChild(pre);
-      }
-      el.appendChild(img);
-      el.appendChild(body);
-      grid.appendChild(el);
-    });
-  } catch (e) {
-    grid.innerHTML = `<p class="hint">加载失败：${e.message}</p>`;
-  }
-}
-
-async function loadCloud() {
-  $("#demo-status").textContent = "正在加载云端 LoRA…";
-  try {
-    const r = await api("/api/cloud/load", { method: "POST" });
-    $("#demo-status").textContent = r.ok ? "云端模型已加载" : `加载失败：${r.error}`;
-  } catch (e) {
-    $("#demo-status").textContent = `加载失败：${e.message}`;
-  }
-}
-
-async function loadRouteAgent() {
-  $("#demo-status").textContent = "正在加载 RouteAgent（GGUF Q4 + mmproj）…";
-  try {
-    const r = await api("/api/route_agent/load", { method: "POST" });
-    if (r.ok) {
-      const be = r.backend || "gguf";
-      const fp = r.gpu_footprint_mb != null ? ` · VRAM≈${Number(r.gpu_footprint_mb).toFixed(0)}MB` : "";
-      $("#demo-status").textContent = `RouteAgent 已加载（${be}${fp}）`;
-    } else {
-      $("#demo-status").textContent = `加载失败：${r.error}`;
-    }
-  } catch (e) {
-    $("#demo-status").textContent = `RouteAgent 加载失败：${e.message}`;
-  }
-}
-
-function drawWaveform(points) {
-  const canvas = $("#net-wave");
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.clientWidth || 960;
-  const cssH = canvas.clientHeight || 160;
-  if (canvas.width !== Math.floor(cssW * dpr) || canvas.height !== Math.floor(cssH * dpr)) {
-    canvas.width = Math.floor(cssW * dpr);
-    canvas.height = Math.floor(cssH * dpr);
-  }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const W = cssW;
-  const H = cssH;
-  ctx.clearRect(0, 0, W, H);
-  // background
-  ctx.fillStyle = "#f4f7f9";
-  ctx.fillRect(0, 0, W, H);
-  // grid
-  ctx.strokeStyle = "#dde5ec";
-  ctx.lineWidth = 1;
-  for (let i = 1; i < 4; i++) {
-    const y = (H * i) / 4;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(W, y);
-    ctx.stroke();
-  }
-  if (!points || points.length < 2) {
-    ctx.fillStyle = "#8a95a3";
-    ctx.font = "12px IBM Plex Mono, monospace";
-    ctx.fillText("waiting for network samples…", 12, H / 2);
+function renderModelStatus(h) {
+  const status = $("#demo-status");
+  if (!status || !h) return;
+  // Don't overwrite an in-flight demo message
+  const cur = status.textContent || "";
+  if (/运行中|失败：|完成 ·|切换失败|链路|断网|恢复|节点/.test(cur) && !/模型|就绪|预加载/.test(cur)) {
     return;
   }
-
-  const rtts = points.map((p) => Number(p.rtt_ms) || 0);
-  const bws = points.map((p) => (Number(p.bandwidth_mbps) || 0) * 10);
-  const losses = points.map((p) => (Number(p.loss_prob) || 0) * 1000); // 0..1000 scale
-  const ymax = Math.max(50, ...rtts, ...bws, ...losses) * 1.15;
-
-  const plot = (arr, color, width) => {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.beginPath();
-    arr.forEach((v, i) => {
-      const x = (i / (arr.length - 1)) * (W - 8) + 4;
-      const y = H - 8 - (Math.min(v, ymax) / ymax) * (H - 16);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-  };
-  // soft fill under RTT
-  ctx.beginPath();
-  rtts.forEach((v, i) => {
-    const x = (i / (rtts.length - 1)) * (W - 8) + 4;
-    const y = H - 8 - (Math.min(v, ymax) / ymax) * (H - 16);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.lineTo(W - 4, H - 8);
-  ctx.lineTo(4, H - 8);
-  ctx.closePath();
-  ctx.fillStyle = "rgba(15, 92, 110, 0.10)";
-  ctx.fill();
-
-  plot(bws, "#2f6f4e", 1.5);
-  plot(losses, "#b42318", 1.5);
-  plot(rtts, "#0f5c6e", 2.2);
-
-  // outage / fail markers
-  points.forEach((p, i) => {
-    if (p.upload_ok === false || p.profile === "outage") {
-      const x = (i / (points.length - 1)) * (W - 8) + 4;
-      ctx.fillStyle = "rgba(180, 35, 24, 0.35)";
-      ctx.fillRect(x - 1, 4, 2, H - 12);
-    }
-  });
+  const ra = !!h.route_agent_loaded;
+  const cloud = !!h.cloud_loaded;
+  const raErr = h.route_agent_error;
+  const cloudErr = h.cloud_error;
+  if (ra && cloud) {
+    const be = h.route_agent?.backend || "gguf";
+    status.textContent = `模型就绪 · RouteAgent(${be}) + Cloud LoRA`;
+    return;
+  }
+  if (raErr || cloudErr) {
+    const parts = [];
+    if (ra) parts.push("RouteAgent ✓");
+    else parts.push(raErr ? `RouteAgent ✗` : "RouteAgent…");
+    if (cloud) parts.push("Cloud ✓");
+    else parts.push(cloudErr ? `Cloud ✗` : "Cloud…");
+    status.textContent = parts.join(" · ");
+    return;
+  }
+  if (ra && !cloud) {
+    status.textContent = "RouteAgent 就绪 · Cloud 预加载中…";
+    return;
+  }
+  if (!ra && cloud) {
+    status.textContent = "Cloud 就绪 · RouteAgent 预加载中…";
+    return;
+  }
+  status.textContent = "模型预加载中…";
 }
 
+/* ---------------- network poll (demo strip) ---------------- */
+
 function updateDisconnectButtons(disconnected) {
-  const disc = $("#net-disconnect");
-  const rest = $("#net-restore");
-  if (disc) disc.disabled = !!disconnected;
-  if (rest) rest.disabled = !disconnected;
-  const panel = $("#net-panel");
-  if (panel) panel.classList.toggle("is-disconnected", !!disconnected);
+  const d = $("#net-disconnect");
+  const r = $("#net-restore");
+  const td = $("#topo-disconnect");
+  const tr = $("#topo-restore");
+  if (d) d.disabled = !!disconnected;
+  if (r) r.disabled = !disconnected;
+  if (td) td.disabled = !!disconnected;
+  if (tr) tr.disabled = !disconnected;
+  $("#net-panel")?.classList.toggle("is-disconnected", !!disconnected);
 }
 
 function renderNetStatus(net, last, disconnected) {
   if (!net) return;
   const isOut = disconnected ?? net.profile === "outage";
   const chip = $("#net-chip");
-  chip.textContent = isOut ? "OUTAGE" : net.profile || "—";
-  chip.className = `net-chip profile-${net.profile || "fair"}`;
-  $("#net-rtt").textContent = `${Number(net.rtt_ms).toFixed(0)} ± ${Number(net.rtt_jitter_ms || 0).toFixed(0)} ms`;
-  $("#net-bw").textContent = `${Number(net.bandwidth_mbps).toFixed(1)} Mbps`;
-  $("#net-loss").textContent = `${(Number(net.loss_prob) * 100).toFixed(1)}%`;
-  $("#net-timeout").textContent = `${Number(net.timeout_ms).toFixed(0)} ms`;
-  if (last) {
-    const ok = last.upload_ok ? "ok" : last.failed_reason || "fail";
-    $("#net-probe").textContent = isOut ? "断网 · 不上云" : `RTT ${Number(last.rtt_ms || 0).toFixed(0)} · ${ok}`;
+  if (chip) {
+    chip.textContent = isOut ? "OUTAGE" : net.profile || "geo";
+    chip.className = `net-chip profile-${isOut ? "outage" : "geo"}`;
   }
+  const city = net.city || "—";
+  const dist = net.distance_geo_km != null ? `${Number(net.distance_geo_km).toFixed(0)} km` : "—";
+  if ($("#net-geo")) $("#net-geo").textContent = `${city} · ${dist}`;
+  if ($("#net-prop"))
+    $("#net-prop").textContent =
+      net.prop_rtt_ms != null ? `${Number(net.prop_rtt_ms).toFixed(1)} ms` : "—";
+  if ($("#net-rtt"))
+    $("#net-rtt").textContent = `${Number(net.rtt_ms).toFixed(0)} ± ${Number(net.rtt_jitter_ms || 0).toFixed(0)} ms`;
+  if ($("#net-bw")) $("#net-bw").textContent = `${Number(net.bandwidth_mbps).toFixed(1)} Mbps`;
+  if ($("#net-loss")) $("#net-loss").textContent = `${(Number(net.loss_prob) * 100).toFixed(1)}%`;
+  if ($("#net-cong")) {
+    const c = Number(net.congestion || 0) + Number(net.diurnal || 0) + Number(net.burst || 0);
+    $("#net-cong").textContent = Number.isFinite(c) ? c.toFixed(2) : "—";
+  }
+  if ($("#net-probe") && last) {
+    const ok = last.upload_ok ? "ok" : last.failed_reason || "fail";
+    $("#net-probe").textContent = isOut ? "断网" : `RTT ${Number(last.rtt_ms || 0).toFixed(0)} · ${ok}`;
+  }
+  // demo bar chips
+  if ($("#demo-link-city")) $("#demo-link-city").textContent = city;
+  if ($("#demo-link-rtt")) $("#demo-link-rtt").textContent = `RTT ${Number(net.rtt_ms || 0).toFixed(0)} ms`;
+  if ($("#demo-link-dist")) $("#demo-link-dist").textContent = dist;
+  if ($("#demo-link-bw"))
+    $("#demo-link-bw").textContent = `${Number(net.bandwidth_mbps || 0).toFixed(1)} Mbps`;
+
   const sel = $("#net-profile");
-  if (sel && net.profile && sel.value !== net.profile) {
-    sel.value = net.profile;
+  if (sel) {
+    const want = isOut ? "outage" : "geo";
+    if ([...sel.options].some((o) => o.value === want)) sel.value = want;
   }
   updateDisconnectButtons(isOut);
 }
 
+function drawWaveform(points) {
+  const canvas = $("#net-wave");
+  if (!canvas || !points?.length) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#f7f8fa";
+  ctx.fillRect(0, 0, W, H);
+  const rtts = points.map((p) => Number(p.rtt_ms) || 0);
+  const maxR = Math.max(40, ...rtts);
+  ctx.strokeStyle = "#0f5c6e";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const x = (i / Math.max(1, points.length - 1)) * (W - 8) + 4;
+    const y = H - 8 - ((Number(p.rtt_ms) || 0) / maxR) * (H - 20);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function activeEdgeNodeId() {
+  return $("#demo-edge-node")?.value || state.selectedEdgeId || "";
+}
+
 async function pollNetwork() {
   try {
-    const st = await api("/api/network");
-    const ts = await api("/api/network/timeseries?n=120");
+    const nid = activeEdgeNodeId();
+    const params = new URLSearchParams({ n: "120" });
+    if (nid) params.set("edge_node_id", nid);
+    const st = await api(`/api/network${nid ? `?edge_node_id=${encodeURIComponent(nid)}` : ""}`);
+    const ts = await api(`/api/network/timeseries?${params}`);
     renderNetStatus(ts.network || st.network, ts.points?.[ts.points.length - 1], st.disconnected);
     drawWaveform(ts.points || []);
   } catch {
-    /* ignore transient errors while server starts */
+    /* ignore */
   }
 }
 
@@ -506,39 +993,54 @@ async function setNetworkProfile() {
   const profile = $("#net-profile").value;
   const fd = new FormData();
   fd.append("profile", profile);
+  const nid = activeEdgeNodeId();
+  if (nid) fd.append("edge_node_id", nid);
   const res = await fetch("/api/network/profile", { method: "POST", body: fd });
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
   renderNetStatus(data.network, data.sample, data.disconnected);
   await pollNetwork();
+  pollTopology();
 }
 
-async function disconnectNetwork() {
-  const res = await fetch("/api/network/disconnect", { method: "POST" });
+async function disconnectNetwork(nodeId) {
+  const nid = nodeId || activeEdgeNodeId();
+  const q = nid ? `?edge_node_id=${encodeURIComponent(nid)}` : "";
+  const res = await fetch(`/api/network/disconnect${q}`, { method: "POST" });
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
   renderNetStatus(data.network, data.sample, true);
-  $("#demo-status").textContent =
-    `已模拟断网（outage）· 恢复将回到 ${data.restore_profile || "fair"}`;
+  if ($("#demo-status"))
+    $("#demo-status").textContent = `节点 ${data.edge_node_id || nid} 已断网`;
   await pollNetwork();
+  pollTopology();
 }
 
-async function restoreNetwork() {
-  const res = await fetch("/api/network/restore", { method: "POST" });
+async function restoreNetwork(nodeId) {
+  const nid = nodeId || activeEdgeNodeId();
+  const q = nid ? `?edge_node_id=${encodeURIComponent(nid)}` : "";
+  const res = await fetch(`/api/network/restore${q}`, { method: "POST" });
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
   renderNetStatus(data.network, data.sample, false);
-  $("#demo-status").textContent =
-    `网络已恢复 · profile=${data.network?.profile || "fair"}`;
+  if ($("#demo-status"))
+    $("#demo-status").textContent = `节点 ${data.edge_node_id || nid} 已恢复物理链路`;
   await pollNetwork();
+  pollTopology();
 }
 
 async function health() {
   try {
     const h = await api("/api/health");
-    const raBe = h.route_agent?.backend || (h.route_agent_loaded ? "on" : "off");
+    const nEdge = h.edge_fleet?.num_nodes ?? "—";
+    const mode = h.edge_fleet?.network_mode || "—";
+    const models = [
+      h.route_agent_loaded ? "RA✓" : "RA…",
+      h.cloud_loaded ? "Cloud✓" : "Cloud…",
+    ].join(" ");
     $("#health-line").textContent =
-      `API ok · net=${h.network_profile || "—"} · route=${h.route_agent_loaded ? raBe : "off"} · cloud=${h.cloud_loaded}`;
+      `API ok · ${models} · edges=${nEdge} · ${mode} · active=${h.active_edge_node || "—"} · net=${h.network_profile || "—"}`;
+    renderModelStatus(h);
   } catch {
     $("#health-line").textContent = "API unreachable";
   }
@@ -546,15 +1048,21 @@ async function health() {
 
 function bind() {
   setupTabs();
-  $("#demo-cat").addEventListener("change", loadDemoImages);
-  $("#demo-img").addEventListener("change", updatePreview);
-  $("#demo-run").addEventListener("click", runDemo);
-  $("#demo-load-cloud").addEventListener("click", loadCloud);
-  $("#demo-load-route")?.addEventListener("click", loadRouteAgent);
-  $("#case-cat").addEventListener("change", loadCases);
+  bindTopoCanvas();
+  $("#demo-cat")?.addEventListener("change", loadDemoImages);
+  $("#demo-img")?.addEventListener("change", updatePreview);
+  $("#demo-file")?.addEventListener("change", onLocalFileChange);
+  $("#demo-file-clear")?.addEventListener("click", clearLocalUpload);
+  $("#demo-run")?.addEventListener("click", runDemo);
+  $("#demo-edge-node")?.addEventListener("change", () => {
+    const id = activeEdgeNodeId();
+    if (id) selectEdgeNode(id).catch((e) => {
+      $("#demo-status").textContent = `切换失败：${e.message}`;
+    });
+  });
   $("#net-profile")?.addEventListener("change", () => {
     setNetworkProfile().catch((e) => {
-      $("#demo-status").textContent = `网络剖面切换失败：${e.message}`;
+      $("#demo-status").textContent = `链路切换失败：${e.message}`;
     });
   });
   $("#net-disconnect")?.addEventListener("click", () => {
@@ -564,20 +1072,64 @@ function bind() {
   });
   $("#net-restore")?.addEventListener("click", () => {
     restoreNetwork().catch((e) => {
-      $("#demo-status").textContent = `恢复网络失败：${e.message}`;
+      $("#demo-status").textContent = `恢复失败：${e.message}`;
     });
   });
-  window.addEventListener("resize", () => pollNetwork());
+  $("#topo-refresh")?.addEventListener("click", () => pollTopology());
+  $("#topo-disconnect")?.addEventListener("click", () => {
+    disconnectNetwork(state.selectedEdgeId).catch(() => {});
+  });
+  $("#topo-restore")?.addEventListener("click", () => {
+    restoreNetwork(state.selectedEdgeId).catch(() => {});
+  });
+}
+
+function showBootError(err) {
+  const el = document.createElement("div");
+  el.style.cssText =
+    "position:fixed;left:12px;right:12px;bottom:12px;z-index:9999;background:#fdecea;color:#b42318;border:1px solid #f3b0ab;padding:10px 12px;border-radius:8px;font:13px/1.4 sans-serif;white-space:pre-wrap;";
+  el.textContent = "前端初始化失败: " + (err && err.message ? err.message : String(err));
+  document.body.appendChild(el);
+  const line = $("#health-line");
+  if (line) line.textContent = "boot error";
 }
 
 async function main() {
-  bind();
-  await health();
-  await loadOverview();
-  await fillCategorySelects();
-  await pollNetwork();
-  setInterval(pollNetwork, 1000);
-  setInterval(health, 5000);
+  try {
+    bind();
+    switchPanel("overview");
+    await health().catch(() => {});
+    await loadOverview().catch((e) => console.warn(e));
+    let fleet = null;
+    try {
+      fleet = await loadEdgeFleet();
+    } catch (e) {
+      console.error(e);
+      showBootError(e);
+    }
+    await fillCategorySelects().catch((e) => console.warn(e));
+    if (fleet) {
+      state.fleet = fleet;
+      state.selectedEdgeId = fleet.active_id;
+      const active = (fleet.nodes || []).find((n) => n.id === fleet.active_id);
+      const demoCat = $("#demo-cat");
+      if (active && active.category && demoCat) {
+        const has = Array.prototype.some.call(demoCat.options, (o) => o.value === active.category);
+        if (has) {
+          demoCat.value = active.category;
+          await loadDemoImages().catch(() => {});
+        }
+      }
+    }
+    await pollNetwork().catch(() => {});
+    await pollTopology().catch(() => {});
+    setInterval(() => pollNetwork().catch(() => {}), 1000);
+    setInterval(() => pollTopology().catch(() => {}), 1000);
+    setInterval(() => health().catch(() => {}), 2000);
+  } catch (err) {
+    console.error(err);
+    showBootError(err);
+  }
 }
 
 main();

@@ -47,16 +47,51 @@ collab:
   cloud_extra_latency_ms: 80.0
   upload_bytes_hard: 80000
   upload_bytes_full: 350000
-  # edge–cloud link simulation (accounting only; see src/network_sim.py)
-  network:
-    profile: fair   # good|fair|weak|outage|custom
+  # Multi-edge fleet (1 cloud + N edges). Alias: num_edge_nodes
+  num_edge_nodes: 3
+  edge_fleet:
+    num_nodes: 3
+    default_categories: [bottle, cable, capsule]
+    # geo placement (aligned with network_env.default_edge_cities)
+    default_cities: [Suzhou, Shenzhen, Chengdu]
+    default_access: [fiber_enterprise, broadband, 5g]
+    # optional explicit overrides:
+    # nodes:
+    #   - id: edge-0
+    #     category: bottle
+    #     city: Suzhou
+    #     access: fiber_enterprise
+
+  # Physical + temporal network world (preferred). See src/network_env.py
+  # enabled:false falls back to legacy static profiles below.
+  network_env:
+    enabled: true
     seed: 42
-    # custom overrides (optional):
-    # rtt_ms: 80
-    # rtt_jitter_ms: 30
-    # bandwidth_mbps: 10
-    # loss_prob: 0.02
-    # timeout_ms: 2000
+    route_stretch: 1.5          # fiber path ≈ geodesic × stretch
+    fiber_km_per_ms: 200.0      # ≈ c/1.5 in silica fiber
+    processing_rtt_ms: 2.0
+    timeout_ms: 3000.0
+    time_scale: 8.0             # >1 accelerates OU/diurnal for demos
+    cloud:
+      city: Shanghai
+      name: Cloud-Shanghai
+      access: fiber_enterprise
+    default_edge_cities: [Suzhou, Shenzhen, Chengdu, Beijing, Urumqi]
+    default_edge_access: [fiber_enterprise, broadband, 5g, broadband, weak_backhaul]
+    dynamics:
+      ou_theta: 0.12            # congestion mean-reversion / second
+      ou_mu: 0.15
+      ou_sigma: 0.25
+      diurnal_amp: 0.30         # working-hour load swing
+      burst_rate_per_hour: 0.6
+      burst_duration_s: 25.0
+      outage_rate_per_day: 0.05
+      outage_duration_s: 45.0
+
+  # legacy static profiles (only if network_env.enabled=false)
+  network:
+    profile: fair   # good|fair|weak|outage|custom|geo
+    seed: 42
   # Qwen3.5-0.8B multimodal agent: decide upload vs local
   # default: gguf Q4_K_M LLM + mmproj-F16 (llama-cpp-python, CUDA preferred)
   route_agent:

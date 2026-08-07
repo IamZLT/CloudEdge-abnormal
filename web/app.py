@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 from functools import lru_cache
 from pathlib import Path
@@ -45,90 +46,158 @@ _route_agent = None
 _route_agent_lock = threading.Lock()
 _route_agent_error: str | None = None
 
-# ---- live network simulation state (shared by demo + waveform) ----
+# ---- multi-edge fleet + per-node network simulation ----
 _net_lock = threading.Lock()
-_net_cfg: dict[str, Any] = {"profile": "fair", "seed": 42}
-_net_prev_cfg: dict[str, Any] | None = None  # profile before simulated outage
-_net_history: deque[dict[str, Any]] = deque(maxlen=180)
+_fleet = None  # EdgeFleet
+_net_cfg: dict[str, Any] = {"profile": "fair", "seed": 42}  # mirrors active node
+_net_prev_cfg: dict[str, Any] | None = None  # legacy; prefer _node_prev_cfg
+_node_prev_cfg: dict[str, dict[str, Any] | None] = {}
+_net_history: deque[dict[str, Any]] = deque(maxlen=180)  # active node view
+_node_histories: dict[str, deque[dict[str, Any]]] = {}
 _net_sampler_stop = threading.Event()
 _net_sim = None
 
 
-def _load_default_collab() -> dict:
+def _load_default_yaml() -> dict:
     if DEFAULT_CFG.exists():
-        cfg = yaml.safe_load(DEFAULT_CFG.read_text(encoding="utf-8")) or {}
-        return dict(cfg.get("collab") or {})
+        return yaml.safe_load(DEFAULT_CFG.read_text(encoding="utf-8")) or {}
     return {}
 
 
+def _load_default_collab() -> dict:
+    return dict(_load_default_yaml().get("collab") or {})
+
+
+def _get_fleet():
+    """Return the process-wide EdgeFleet (create if missing)."""
+    global _fleet
+    if _fleet is not None:
+        return _fleet
+    with _net_lock:
+        if _fleet is None:
+            from src.edge_fleet import EdgeFleet
+
+            cfg = _load_default_yaml()
+            _fleet = EdgeFleet.from_config(cfg, data_root=DATA_ROOT)
+            for nid in _fleet.order:
+                _node_histories.setdefault(nid, deque(maxlen=180))
+                _node_prev_cfg.setdefault(nid, None)
+            _sync_active_network_unlocked()
+    return _fleet
+
+
+def _sync_active_network_unlocked() -> None:
+    """Copy active edge node's network into legacy globals (waveform / APIs)."""
+    global _net_cfg, _net_sim, _net_history
+    if _fleet is None:
+        return
+    node = _fleet.get()
+    _net_cfg = dict(node.network)
+    _net_sim = node.sim
+    _net_history = _node_histories.setdefault(node.id, deque(maxlen=180))
+
+
 def _init_network_state() -> None:
-    global _net_cfg, _net_sim
-    collab = _load_default_collab()
-    _net_cfg = dict(collab.get("network") or {"profile": "fair", "seed": 42})
-    if "profile" not in _net_cfg:
-        _net_cfg["profile"] = "fair"
-    from src.network_sim import NetworkSimulator
-
-    _net_sim = NetworkSimulator.from_config(_net_cfg)
+    """Boot multi-edge fleet (num_nodes from config, default 3)."""
+    _get_fleet()
 
 
-def _network_snapshot() -> dict[str, Any]:
-    from src.network_sim import resolve_profile
-
+def _network_snapshot(node_id: str | None = None) -> dict[str, Any]:
+    fleet = _get_fleet()
     with _net_lock:
-        cfg = dict(_net_cfg)
-    prof = resolve_profile(cfg)
-    d = prof.to_dict()
-    d["profile"] = prof.name
-    return d
+        node = fleet.get(node_id)
+        snap = node.network_snapshot()
+        snap["edge_node_id"] = node.id
+        snap["edge_node_name"] = node.name
+        return snap
 
 
-def _push_net_sample(sample: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Append one waveform point (jittered from current profile or upload outcome)."""
-    from src.network_sim import NetworkSimulator, resolve_profile
-
+def _push_net_sample(
+    sample: dict[str, Any] | None = None,
+    *,
+    node_id: str | None = None,
+) -> dict[str, Any]:
+    """Append one waveform point for the given (or active) edge node."""
+    fleet = _get_fleet()
     with _net_lock:
-        cfg = dict(_net_cfg)
-        sim = _net_sim
-    if sim is None:
-        sim = NetworkSimulator.from_config(cfg)
-    prof = resolve_profile(cfg)
+        node = fleet.get(node_id)
+        sim = node.sim
+        hist = _node_histories.setdefault(node.id, deque(maxlen=180))
+    # Live geo snapshot (advances OU / diurnal) or legacy profile
+    snap = node.network_snapshot()
     if sample is None:
-        # probe with a small payload - accounts RTT/tx; loss may fail
         out = sim.try_upload(int((_load_default_collab().get("upload_bytes_hard") or 80000)))
+        snap = node.network_snapshot()  # refresh after upload attempt
         sample = {
             "t": time.time(),
-            "profile": prof.name,
-            "rtt_ms": float(out.rtt_ms if out.ok or out.failed_reason == "timeout" else max(0.0, prof.rtt_ms)),
+            "profile": snap.get("profile") or snap.get("name") or "geo",
+            "edge_node_id": node.id,
+            "city": snap.get("city") or node.city,
+            "distance_geo_km": snap.get("distance_geo_km"),
+            "distance_fiber_km": snap.get("distance_fiber_km"),
+            "prop_rtt_ms": snap.get("prop_rtt_ms"),
+            "congestion": snap.get("congestion"),
+            "rtt_ms": float(
+                out.rtt_ms
+                if (out.ok or out.failed_reason in {"timeout", "outage"}) and out.rtt_ms > 0
+                else snap.get("rtt_ms") or 0.0
+            ),
             "tx_ms": float(out.tx_ms),
-            "bandwidth_mbps": float(prof.bandwidth_mbps),
-            "loss_prob": float(prof.loss_prob),
-            "timeout_ms": float(prof.timeout_ms),
+            "bandwidth_mbps": float(snap.get("bandwidth_mbps") or 0.0),
+            "loss_prob": float(snap.get("loss_prob") or 0.0),
+            "timeout_ms": float(snap.get("timeout_ms") or 0.0),
             "upload_ok": bool(out.ok),
             "failed_reason": out.failed_reason,
             "source": "probe",
         }
-        # if loss dropped before measuring rtt, synthesize a visual sample from profile
-        if out.failed_reason == "loss" and out.rtt_ms == 0:
-            rng = np.random.default_rng()
-            sample["rtt_ms"] = float(max(0.0, rng.normal(prof.rtt_ms, max(1.0, prof.rtt_jitter_ms))))
-            sample["tx_ms"] = float((80000 * 8) / (max(1e-6, prof.bandwidth_mbps) * 1e6) * 1000)
+        if out.failed_reason == "loss" and not sample["rtt_ms"]:
+            sample["rtt_ms"] = float(snap.get("rtt_ms") or 0.0)
+            bw = max(1e-6, float(snap.get("bandwidth_mbps") or 1.0))
+            sample["tx_ms"] = float((80000 * 8) / (bw * 1e6) * 1000)
     else:
         sample = dict(sample)
         sample.setdefault("t", time.time())
-        sample.setdefault("profile", prof.name)
+        sample.setdefault("profile", snap.get("profile") or "geo")
+        sample.setdefault("edge_node_id", node.id)
+        sample.setdefault("city", snap.get("city") or node.city)
     with _net_lock:
-        _net_history.append(sample)
+        hist.append(sample)
     return sample
 
 
 def _net_sampler_loop() -> None:
+    """Probe every edge node's link so the fleet stays live."""
     while not _net_sampler_stop.is_set():
         try:
-            _push_net_sample()
+            fleet = _get_fleet()
+            for nid in list(fleet.order):
+                _push_net_sample(node_id=nid)
         except Exception:
             pass
         _net_sampler_stop.wait(0.75)
+
+
+def _preload_models() -> None:
+    """Warm RouteAgent + optional cloud VLM so Demo is ready without Preload buttons."""
+    try:
+        get_route_agent()
+        print("[web] RouteAgent preloaded", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[web] RouteAgent preload failed: {exc}", flush=True)
+    preload_cloud = os.environ.get("WEB_PRELOAD_CLOUD", "1").lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    if not preload_cloud:
+        print("[web] Cloud preload skipped (WEB_PRELOAD_CLOUD=0)", flush=True)
+        return
+    try:
+        get_cloud_client()
+        print("[web] Cloud VLM preloaded", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[web] Cloud preload failed: {exc}", flush=True)
 
 
 @app.on_event("startup")
@@ -136,6 +205,11 @@ def _on_startup() -> None:
     _init_network_state()
     t = threading.Thread(target=_net_sampler_loop, name="net-sampler", daemon=True)
     t.start()
+    preload = os.environ.get("WEB_PRELOAD", "1").lower() not in {"0", "false", "no", "off"}
+    if preload:
+        threading.Thread(target=_preload_models, name="model-preload", daemon=True).start()
+    else:
+        print("[web] model preload skipped (WEB_PRELOAD=0)", flush=True)
 
 
 def _read_json(path: Path) -> Any:
@@ -173,7 +247,7 @@ def load_summary() -> dict:
         "stack": {
             "edge": "Qwen3.5-0.8B vision multi-layer patch gallery (PaDiM optional)",
             "cloud": "Qwen3-VL-8B + LoRA (also 4B LoRA available)",
-            "collab": "Qwen3.5 RouteAgent (GGUF Q4 default) + network sim (good/fair/weak/outage)",
+            "collab": "Multi-edge fleet + Qwen3.5 RouteAgent (GGUF Q4) + per-node network sim",
         },
     }
 
@@ -324,15 +398,21 @@ def find_gt_mask(category: str, image_path: str) -> Path | None:
     return mask if mask.exists() else None
 
 
-def build_viz_payload(category: str, image_path: str) -> dict[str, Any]:
+def build_viz_payload(
+    category: str,
+    image_path: str,
+    *,
+    include_cloud: bool = True,
+) -> dict[str, Any]:
     edge_viz = find_anomalib_viz(category, image_path, "edge")
-    cloud_viz = find_anomalib_viz(category, image_path, "cloud")
+    cloud_viz = find_anomalib_viz(category, image_path, "cloud") if include_cloud else None
     gt_mask = find_gt_mask(category, image_path)
     return {
         "edge_strip": _url_for_file(edge_viz),
-        # heavy Anomalib cloud (PatchCore) - NOT Qwen-VL; VLM has no heatmap
-        "cloud_strip": _url_for_file(cloud_viz),
+        # heavy Anomalib cloud (PatchCore) - NOT Qwen-VL; only when routed to cloud
+        "cloud_strip": _url_for_file(cloud_viz) if include_cloud else None,
         "gt_mask": _url_for_file(gt_mask),
+        "include_cloud": bool(include_cloud),
         "legend": "Anomalib only (PaDiM/PatchCore). VLM outputs JSON, not heatmaps.",
     }
 
@@ -422,13 +502,17 @@ def _run_route_decision(
     category: str,
     edge: dict | None,
     use_agent: bool,
+    edge_node_id: str | None = None,
 ) -> dict[str, Any]:
-    """Decide upload via RouteAgent (or heuristic fallback) + network try_upload."""
+    """Decide upload via RouteAgent (or heuristic fallback) + per-node network try_upload."""
     from src.vlm.route_agent import RouteContext, heuristic_upload, resolve_network_profile
 
     collab = _load_default_collab()
+    fleet = _get_fleet()
     with _net_lock:
-        net_cfg = dict(_net_cfg)
+        node = fleet.get(edge_node_id)
+        net_cfg = dict(node.network)
+        sim = node.sim
     profile, net = resolve_network_profile({"network": net_cfg})
     score = float(edge["edge_score"]) if edge and edge.get("edge_score") is not None else 0.5
     thr = float(edge["threshold"]) if edge and edge.get("threshold") is not None else 0.5
@@ -487,10 +571,6 @@ def _run_route_decision(
     net_outcome = None
     path_type = "LOCAL"
     if upload_want:
-        from src.network_sim import NetworkSimulator
-
-        with _net_lock:
-            sim = _net_sim or NetworkSimulator.from_config(net_cfg)
         up_hard = int(collab.get("upload_bytes_hard") or 80000)
         out = sim.try_upload(up_hard)
         net_outcome = out.to_dict()
@@ -499,6 +579,7 @@ def _run_route_decision(
             {
                 "t": time.time(),
                 "profile": profile,
+                "edge_node_id": node.id,
                 "rtt_ms": float(out.rtt_ms),
                 "tx_ms": float(out.tx_ms),
                 "bandwidth_mbps": float(net.get("bandwidth_mbps") or 0),
@@ -507,30 +588,46 @@ def _run_route_decision(
                 "upload_ok": bool(out.ok),
                 "failed_reason": out.failed_reason,
                 "source": "demo_upload",
-            }
+            },
+            node_id=node.id,
         )
     else:
         path_type = "LOCAL"
 
+    with _net_lock:
+        node.stats.record_path(
+            path_type=path_type, upload_want=upload_want, network_profile=profile
+        )
+        # Prefer live geo snapshot (distance / prop_rtt / congestion) for UI
+        live_net = node.network_snapshot()
+
     return {
         "route_agent": route_info,
-        "network": net,
+        "network": live_net,
         "network_outcome": net_outcome,
         "path_type": path_type,
         "upload_want": upload_want,
+        "edge_node": node.to_dict(),
     }
 
 
 @app.get("/", response_class=HTMLResponse)
 def index():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    return HTMLResponse(html)
+    return HTMLResponse(
+        html,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @app.get("/api/health")
 def health():
     snap = _network_snapshot()
     ra = _route_agent_info()
+    fleet = _get_fleet()
     return {
         "ok": True,
         "cloud_loaded": _cloud_client is not None,
@@ -539,41 +636,76 @@ def health():
         "route_agent_error": ra.get("error"),
         "route_agent": ra,
         "network_profile": snap.get("profile"),
+        "edge_fleet": fleet.summary(),
+        "active_edge_node": fleet.active_id,
         "data_root": str(DATA_ROOT),
         "cuda": os.environ.get("CUDA_VISIBLE_DEVICES"),
     }
 
 
-def _apply_network_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Replace live network config and rebuild simulator."""
-    global _net_sim
-    from src.network_sim import NetworkSimulator
-
+def _apply_network_cfg(
+    cfg: dict[str, Any],
+    *,
+    node_id: str | None = None,
+) -> dict[str, Any]:
+    """Replace active (or given) edge node's network config and rebuild simulator."""
+    fleet = _get_fleet()
     with _net_lock:
-        _net_cfg.clear()
-        _net_cfg.update(cfg)
-        if "profile" not in _net_cfg:
-            _net_cfg["profile"] = "fair"
-        _net_sim = NetworkSimulator.from_config(_net_cfg)
-    sample = _push_net_sample()
+        node = fleet.get(node_id)
+        node.set_network(cfg)
+        if node.id == fleet.active_id:
+            _sync_active_network_unlocked()
+    sample = _push_net_sample(node_id=node.id)
     return sample
 
 
-@app.get("/api/network")
-def api_network():
-    snap = _network_snapshot()
-    with _net_lock:
-        n = len(_net_history)
-        last = dict(_net_history[-1]) if _net_history else None
-        prev = dict(_net_prev_cfg) if _net_prev_cfg else None
-        disconnected = str(_net_cfg.get("profile") or "").lower() == "outage"
+@app.get("/api/edge_nodes")
+def api_edge_nodes():
+    """List configured edge nodes (num_nodes from config, default 3)."""
+    fleet = _get_fleet()
+    return {"ok": True, **fleet.summary()}
+
+
+@app.post("/api/edge_nodes/active")
+async def api_edge_nodes_set_active(edge_node_id: str = Form(...)):
+    """Select which edge node drives demo + network waveform."""
+    fleet = _get_fleet()
+    try:
+        with _net_lock:
+            node = fleet.set_active(str(edge_node_id))
+            _sync_active_network_unlocked()
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    snap = _network_snapshot(node.id)
     return {
         "ok": True,
+        "active_id": node.id,
+        "edge_node": node.to_dict(),
         "network": snap,
+        "disconnected": str(snap.get("profile") or "").lower() == "outage",
+    }
+
+
+@app.get("/api/network")
+def api_network(edge_node_id: str | None = Query(None)):
+    fleet = _get_fleet()
+    with _net_lock:
+        node = fleet.get(edge_node_id)
+        hist = _node_histories.get(node.id) or deque()
+        n = len(hist)
+        last = dict(hist[-1]) if hist else None
+        prev = _node_prev_cfg.get(node.id)
+        disconnected = str(node.network.get("profile") or "").lower() == "outage"
+    return {
+        "ok": True,
+        "edge_node_id": node.id,
+        "edge_node": node.to_dict(),
+        "network": _network_snapshot(node.id),
         "history_len": n,
         "last_sample": last,
         "disconnected": disconnected,
-        "restore_profile": (prev or {}).get("profile"),
+        "restore_profile": (prev or {}).get("profile") if prev else None,
+        "fleet": {"num_nodes": fleet.num_nodes, "active_id": fleet.active_id},
     }
 
 
@@ -581,98 +713,146 @@ def api_network():
 def api_network_profiles():
     from src.network_sim import PROFILES
 
+    fleet = _get_fleet()
     return {
+        "mode": "physical_geo_temporal" if fleet.env is not None else "legacy_profile",
         "profiles": {k: v.to_dict() for k, v in PROFILES.items()},
+        "note": (
+            "Physical mode: RTT comes from geo distance + live congestion; "
+            "use outage/disconnect to force link down, restore to resume physics."
+            if fleet.env is not None
+            else "Legacy static profiles."
+        ),
         "current": _network_snapshot(),
+        "edge_fleet": fleet.summary(),
     }
+
+
+@app.get("/api/network/env")
+def api_network_env():
+    """Full physical environment snapshot (cloud + all edge links)."""
+    fleet = _get_fleet()
+    if fleet.env is None:
+        return {"ok": True, "enabled": False, "mode": "legacy_profile"}
+    return {"ok": True, "enabled": True, **fleet.env.summary()}
 
 
 @app.post("/api/network/profile")
 async def api_network_set_profile(
     profile: str = Form(...),
+    edge_node_id: str | None = Form(None),
     rtt_ms: float | None = Form(None),
     bandwidth_mbps: float | None = Form(None),
     loss_prob: float | None = Form(None),
     timeout_ms: float | None = Form(None),
 ):
-    global _net_prev_cfg
     from src.network_sim import PROFILES
 
     name = str(profile).lower().strip()
-    if name not in PROFILES and name != "custom":
-        raise HTTPException(400, f"unknown profile: {name}; choose {list(PROFILES)}")
-    with _net_lock:
-        cfg = dict(_net_cfg)
+    allowed = set(PROFILES) | {"custom", "geo", "physical"}
+    if name not in allowed:
+        raise HTTPException(400, f"unknown profile: {name}; choose {sorted(allowed)}")
+    fleet = _get_fleet()
+    try:
+        with _net_lock:
+            node = fleet.get(edge_node_id)
+            cfg = dict(node.network_snapshot())
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    # In physical mode, non-outage profiles mean "resume geo physics"
+    if fleet.env is not None and name not in {"outage"}:
+        name = "geo"
     cfg["profile"] = name
-    if rtt_ms is not None:
-        cfg["rtt_ms"] = float(rtt_ms)
-    if bandwidth_mbps is not None:
-        cfg["bandwidth_mbps"] = float(bandwidth_mbps)
-    if loss_prob is not None:
-        cfg["loss_prob"] = float(loss_prob)
-    if timeout_ms is not None:
-        cfg["timeout_ms"] = float(timeout_ms)
-    # manual profile change clears outage restore bookmark unless staying on outage
+    if fleet.env is None:
+        if rtt_ms is not None:
+            cfg["rtt_ms"] = float(rtt_ms)
+        if bandwidth_mbps is not None:
+            cfg["bandwidth_mbps"] = float(bandwidth_mbps)
+        if loss_prob is not None:
+            cfg["loss_prob"] = float(loss_prob)
+        if timeout_ms is not None:
+            cfg["timeout_ms"] = float(timeout_ms)
     if name != "outage":
         with _net_lock:
-            _net_prev_cfg = None
-    sample = _apply_network_cfg(cfg)
-    with _net_lock:
-        disconnected = str(_net_cfg.get("profile") or "").lower() == "outage"
+            _node_prev_cfg[node.id] = None
+    sample = _apply_network_cfg(cfg, node_id=node.id)
+    snap = _network_snapshot(node.id)
     return {
         "ok": True,
-        "network": _network_snapshot(),
+        "edge_node_id": node.id,
+        "network": snap,
         "sample": sample,
-        "disconnected": disconnected,
+        "disconnected": str(snap.get("profile") or "").lower() == "outage",
     }
 
 
 @app.post("/api/network/disconnect")
-def api_network_disconnect():
-    """Simulate full outage; remember previous profile for restore."""
-    global _net_prev_cfg
-    with _net_lock:
-        cur = str(_net_cfg.get("profile") or "fair").lower()
-        if cur != "outage":
-            _net_prev_cfg = dict(_net_cfg)
-        cfg = dict(_net_cfg)
+def api_network_disconnect(edge_node_id: str | None = Query(None)):
+    """Simulate full outage on one edge node; remember previous profile for restore."""
+    fleet = _get_fleet()
+    try:
+        with _net_lock:
+            node = fleet.get(edge_node_id)
+            cur = str(node.network.get("profile") or "fair").lower()
+            if cur != "outage":
+                _node_prev_cfg[node.id] = dict(node.network)
+            cfg = dict(node.network)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
     cfg["profile"] = "outage"
-    sample = _apply_network_cfg(cfg)
+    sample = _apply_network_cfg(cfg, node_id=node.id)
     with _net_lock:
-        prev = dict(_net_prev_cfg) if _net_prev_cfg else None
+        prev = _node_prev_cfg.get(node.id)
     return {
         "ok": True,
         "disconnected": True,
-        "network": _network_snapshot(),
+        "edge_node_id": node.id,
+        "network": _network_snapshot(node.id),
         "sample": sample,
         "restore_profile": (prev or {}).get("profile") or "fair",
     }
 
 
 @app.post("/api/network/restore")
-def api_network_restore():
-    """Restore network to the profile used before disconnect (default fair)."""
-    global _net_prev_cfg
-    with _net_lock:
-        prev = dict(_net_prev_cfg) if _net_prev_cfg else {"profile": "fair", "seed": 42}
-        _net_prev_cfg = None
+def api_network_restore(edge_node_id: str | None = Query(None)):
+    """Restore one edge node's network to the profile used before disconnect."""
+    fleet = _get_fleet()
+    try:
+        with _net_lock:
+            node = fleet.get(edge_node_id)
+            prev = dict(_node_prev_cfg.get(node.id) or {"profile": "fair", "seed": 42 + node.index})
+            _node_prev_cfg[node.id] = None
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
     if str(prev.get("profile") or "").lower() == "outage":
         prev["profile"] = "fair"
-    sample = _apply_network_cfg(prev)
+    sample = _apply_network_cfg(prev, node_id=node.id)
     return {
         "ok": True,
         "disconnected": False,
-        "network": _network_snapshot(),
+        "edge_node_id": node.id,
+        "network": _network_snapshot(node.id),
         "sample": sample,
         "restore_profile": None,
     }
 
 
 @app.get("/api/network/timeseries")
-def api_network_timeseries(n: int = Query(120, ge=10, le=180)):
+def api_network_timeseries(
+    n: int = Query(120, ge=10, le=180),
+    edge_node_id: str | None = Query(None),
+):
+    fleet = _get_fleet()
     with _net_lock:
-        pts = list(_net_history)[-int(n) :]
-    return {"points": pts, "network": _network_snapshot()}
+        node = fleet.get(edge_node_id)
+        hist = _node_histories.get(node.id) or deque()
+        pts = list(hist)[-int(n) :]
+    return {
+        "points": pts,
+        "network": _network_snapshot(node.id),
+        "edge_node_id": node.id,
+    }
 
 
 @app.post("/api/route_agent/load")
@@ -786,17 +966,27 @@ async def api_demo(
     image_path: str | None = Form(None),
     live_cloud: str = Form("false"),
     use_route_agent: str = Form("true"),
+    edge_node_id: str | None = Form(None),
     file: UploadFile | None = File(None),
 ):
-    """Demo: edge score -> RouteAgent + network sim -> optional live LoRA cloud."""
+    """Demo: per-edge score -> RouteAgent + that node's network sim -> optional cloud."""
     live = str(live_cloud).lower() in {"1", "true", "yes", "on"}
     use_agent = str(use_route_agent).lower() in {"1", "true", "yes", "on"}
     tmp_path = None
     if file is not None and file.filename:
+        name = Path(file.filename).name
+        suffix = Path(name).suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}:
+            raise HTTPException(400, "unsupported image type; use png/jpg/bmp/webp")
+        data = await file.read()
+        if not data:
+            raise HTTPException(400, "empty upload")
+        if len(data) > 20 * 1024 * 1024:
+            raise HTTPException(400, "upload too large (max 20MB)")
         tmp_dir = ROOT / "outputs" / "web_uploads"
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path = tmp_dir / Path(file.filename).name
-        tmp_path.write_bytes(await file.read())
+        tmp_path = tmp_dir / f"{int(time.time())}_{uuid.uuid4().hex[:8]}{suffix}"
+        tmp_path.write_bytes(data)
         image_path = str(tmp_path.resolve())
 
     if not image_path:
@@ -805,21 +995,41 @@ async def api_demo(
     if not p.exists():
         raise HTTPException(404, f"image not found: {image_path}")
 
+    fleet = _get_fleet()
+    try:
+        with _net_lock:
+            node = fleet.get(edge_node_id)
+            # keep UI selection in sync when demo specifies a node
+            if edge_node_id:
+                fleet.set_active(node.id)
+                _sync_active_network_unlocked()
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
     edge = edge_lookup(category, image_path)
     cached = case_lookup_with_cloud(category, image_path)
     route_pack = _run_route_decision(
-        image_path=p, category=category, edge=edge, use_agent=use_agent
+        image_path=p,
+        category=category,
+        edge=edge,
+        use_agent=use_agent,
+        edge_node_id=node.id,
     )
+
+    path_type = route_pack["path_type"]
+    went_cloud = path_type == "CLOUD_REVIEW"
 
     result: dict[str, Any] = {
         "category": category,
+        "edge_node": route_pack.get("edge_node") or node.to_dict(),
         "image_path": str(p.resolve()),
         "image_url": f"/api/image?path={p.resolve()}",
         "edge": edge,
-        "viz": build_viz_payload(category, image_path),
+        # Cloud heatmap / PatchCore strip only when this run actually routes to cloud.
+        "viz": build_viz_payload(category, image_path, include_cloud=went_cloud),
         "cached_case": None,
         "cloud_live": None,
-        "route": route_pack["path_type"],
+        "route": path_type,
         "route_agent": route_pack["route_agent"],
         "network": route_pack["network"],
         "network_outcome": route_pack["network_outcome"],
@@ -834,32 +1044,16 @@ async def api_demo(
             "edge_score": cached.get("edge_score"),
             "final": cached.get("final_decision"),
             "path_type": cached.get("path_type"),
-            "cloud": cached.get("cloud"),
+            # Only expose cached cloud JSON when this run went to cloud.
+            "cloud": (cached.get("cloud") if went_cloud else None),
         }
 
-    path_type = route_pack["path_type"]
     # default final = edge; upgrade if cloud runs or cached cloud on same path
     result["final_decision"] = (edge or {}).get("edge_pred") or (
-        cached.get("final_decision") if cached else None
+        cached.get("final_decision") if cached and went_cloud else None
     )
 
-    if not live:
-        # offline: if agent wants cloud and we have cached cloud JSON, show it
-        if path_type == "CLOUD_REVIEW" and cached and cached.get("cloud"):
-            result["final_decision"] = cached.get("final_decision")
-            result["cloud_live"] = {
-                **(cached.get("cloud") or {}),
-                "from_cache": True,
-            }
-        elif path_type != "CLOUD_REVIEW":
-            result["cloud_live"] = {
-                "skipped": True,
-                "reason": route_pack["route_agent"].get("reason") or "stay local",
-            }
-        return result
-
-    # live cloud VLM only when upload succeeded
-    if path_type != "CLOUD_REVIEW":
+    if not went_cloud:
         result["cloud_live"] = {
             "skipped": True,
             "reason": (
@@ -868,6 +1062,21 @@ async def api_demo(
                 else route_pack["route_agent"].get("reason") or "RouteAgent: stay local"
             ),
         }
+        return result
+
+    if not live:
+        # offline cloud path: reuse cached cloud JSON when available
+        if cached and cached.get("cloud"):
+            result["final_decision"] = cached.get("final_decision")
+            result["cloud_live"] = {
+                **(cached.get("cloud") or {}),
+                "from_cache": True,
+            }
+        else:
+            result["cloud_live"] = {
+                "skipped": True,
+                "reason": "CLOUD_REVIEW but no cached cloud JSON; enable Live cloud LoRA",
+            }
         return result
 
     try:

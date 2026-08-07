@@ -1,10 +1,35 @@
 # CloudEdge-abnormal
 
 
-**主路径**：边侧 **Qwen3.5-0.8B** 视觉塔多层 patch gallery 快检 → **RouteAgent（默认 GGUF Q4）** 决定是否上云 → Qwen3-VL(+LoRA) JSON 复核。  
+**主路径**：**多边缘节点**（默认 3，可配）各自跑 Qwen3.5-0.8B 视觉塔多层 patch gallery → **RouteAgent（默认 GGUF Q4）** 决定是否上云 → 共享云端 Qwen3-VL(+LoRA) JSON 复核。  
 **辅路径**：CLIP / DINOv3 gallery、Anomalib PaDiM（可选 OpenVINO 导出）与像素级对比。
 
 技术栈：Anomalib + OpenVINO/ONNX + llama-cpp-python（RouteAgent Q4）+（可选）KubeEdge/Sedna + MLflow + FastAPI Web。
+
+边缘舰队 + 物理网络环境（`configs/default.yaml`）：
+
+```yaml
+collab:
+  num_edge_nodes: 3
+  edge_fleet:
+    num_nodes: 3
+    default_categories: [bottle, cable, capsule]
+    default_cities: [Suzhou, Shenzhen, Chengdu]   # 距云距离不同 → 传播时延不同
+  network_env:                 # src/network_env.py
+    enabled: true
+    cloud: {city: Shanghai}
+    route_stretch: 1.5         # 光纤绕路系数
+    fiber_km_per_ms: 200.0     # 光纤中约 c/1.5
+    time_scale: 8.0            # 演示加速 OU/昼夜波动
+```
+
+链路模型：Haversine 距离 → 光纤路径 → 传播 RTT，再叠加接入网、OU 拥堵、昼夜负载、突发/偶发断网（随时间变化）。
+
+```bash
+python scripts/smoke_edge_fleet.py --config configs/default.yaml
+python scripts/smoke_network_env.py --seconds 6
+# 覆盖边缘数量：--num-nodes 5
+```
 
 ## 当前结论（MVTec-15）
 
@@ -113,10 +138,11 @@ CUDA_VISIBLE_DEVICES=0 WEB_VLM_DEVICE=cuda:0 WEB_ROUTE_DEVICE=cuda:0 \
 | `WEB_ROUTE_GGUF_DIR` | 量化包目录（可选覆盖） |
 | `WEB_VLM_DEVICE` | 云端 LoRA 设备 |
 
-- 协同演示：边侧分数 → **RouteAgent（GGUF Q4）** → 网络仿真 → 可选云端 LoRA  
+- 页面：**Overview** · **Topology**（云边远近 + 链路实时 RTT/带宽/丢包）· **Node Demo**（单节点案例）  
+- Topology 按地理距离排布边缘；Demo 绑定所选节点的物理链路  
 - 建议先点 **Preload RouteAgent (Q4)**  
 
-默认配置：`collab.route_agent.backend: gguf`，`vision_mode: text`（复用 AD 的 CONTEXT，不再二次跑视觉编码）。
+默认配置：`collab.route_agent.backend: gguf`，`vision_mode: text`；`network_env.enabled: true`。
 
 ---
 

@@ -3,11 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CloudEdge Defect · Research Console</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Source+Sans+3:wght@400;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,650&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/app.css" />
+  <title>CloudEdge Defect · Console</title>
+  <link rel="stylesheet" href="/static/app.css?v=20260808h" />
 </head>
 <body>
   <div class="page">
@@ -20,60 +17,37 @@
       </div>
       <nav class="tabs" id="tabs">
         <button class="tab active" data-panel="overview">Overview</button>
-        <button class="tab" data-panel="metrics">Metrics</button>
-        <button class="tab" data-panel="demo">Demo</button>
-        <button class="tab" data-panel="cases">LLM Cases</button>
+        <button class="tab" data-panel="topology">Topology</button>
+        <button class="tab" data-panel="demo">Node Demo</button>
       </nav>
     </header>
 
     <main>
+      <!-- 01 Overview -->
       <section class="panel active" id="panel-overview">
         <header class="section-title">
           <span class="sec-no">01</span>
           <div>
             <h1>云边协同缺陷检测</h1>
             <p class="lead">
-              边侧 Qwen3.5-0.8B 视觉塔多层 patch 负责实时筛查；不确定样本上云，由 Qwen-VL + LoRA 输出结构化判读
-              <code>decision / defect_type / reason</code>。
+              多边缘节点本地快检（Qwen3.5-0.8B）→ RouteAgent 路由 → 物理网络上云 → 云端 Qwen-VL(+LoRA) 复核。
+              打开 <strong>Topology</strong> 查看云边远近与实时链路；<strong>Node Demo</strong> 做单节点案例测试。
             </p>
           </div>
         </header>
 
         <div class="pipeline-bar" aria-label="system pipeline">
-          <div class="p-step">Input Image</div>
+          <div class="p-step">Edge Image</div>
           <div class="p-arrow">→</div>
-          <div class="p-step emphasize-a">Edge Score</div>
+          <div class="p-step emphasize-a">Local AD</div>
           <div class="p-arrow">→</div>
           <div class="p-step">RouteAgent</div>
           <div class="p-arrow">→</div>
-          <div class="p-step">Network Sim</div>
+          <div class="p-step">Geo Link</div>
           <div class="p-arrow">→</div>
           <div class="p-step emphasize-b">Cloud VLM</div>
           <div class="p-arrow">→</div>
           <div class="p-step">OK / NG</div>
-        </div>
-
-        <div class="kpi-row" id="hero-stats">
-          <div class="kpi">
-            <span class="kpi-label">B1 Edge-only F1</span>
-            <strong id="m-b1">—</strong>
-            <span class="kpi-note">Edge baseline (cached)</span>
-          </div>
-          <div class="kpi">
-            <span class="kpi-label">Zero-shot 8B F1</span>
-            <strong id="m-zs">—</strong>
-            <span class="kpi-note">Cloud w/o finetune</span>
-          </div>
-          <div class="kpi highlight">
-            <span class="kpi-label">LoRA 8B Collab F1</span>
-            <strong id="m-l8">—</strong>
-            <span class="kpi-note">Proposed (mean@15)</span>
-          </div>
-          <div class="kpi">
-            <span class="kpi-label">LoRA 4B Collab F1</span>
-            <strong id="m-l4">—</strong>
-            <span class="kpi-note">Lightweight cloud</span>
-          </div>
         </div>
 
         <div class="method-grid" id="stack-cards">
@@ -86,80 +60,110 @@
             <p id="stack-cloud">Qwen3-VL + LoRA</p>
           </article>
           <article>
-            <h3>Collaboration</h3>
-            <p id="stack-collab">Hard-example upload</p>
+            <h3>Network</h3>
+            <p id="stack-collab">Geo distance + temporal link dynamics</p>
           </article>
         </div>
+
+        <div class="overview-actions">
+          <button type="button" class="btn primary" id="goto-topology">打开云边拓扑</button>
+          <button type="button" class="btn" id="goto-demo">单节点 Demo</button>
+        </div>
+
+        <header class="section-title" style="margin-top:1.75rem">
+          <span class="sec-no">01b</span>
+          <div>
+            <h2>边缘节点一览</h2>
+            <p class="lead">点击卡片可设为活动节点并进入 Demo</p>
+          </div>
+        </header>
+        <div class="edge-fleet-grid" id="edge-fleet-grid"></div>
       </section>
 
-      <section class="panel" id="panel-metrics">
+      <!-- 02 Topology (dedicated) -->
+      <section class="panel panel-wide" id="panel-topology">
         <header class="section-title">
           <span class="sec-no">02</span>
           <div>
-            <h2>全类指标对比</h2>
-            <p class="lead">MVTec AD · 15 categories · Image-level F1</p>
+            <h1>云边拓扑 · 实时链路</h1>
+            <p class="lead">
+              云在中心，边缘按地理距离排布（越远离云越远）。链路上实时显示 RTT / 带宽 / 丢包 / 拥堵。
+            </p>
           </div>
         </header>
-        <div class="table-card">
-          <table id="metrics-table">
-            <thead>
-              <tr>
-                <th>Category</th>
-                <th>n</th>
-                <th>B1</th>
-                <th>ZS 8B</th>
-                <th>LoRA 4B</th>
-                <th>LoRA 8B</th>
-                <th>Δ(8B−B1)</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+
+        <div class="topo-layout">
+          <div class="topo-stage">
+            <div class="topo-toolbar">
+              <span class="topo-cloud-label" id="topo-cloud-label">Cloud —</span>
+              <div class="topo-toolbar-actions">
+                <button type="button" class="btn" id="topo-refresh">刷新</button>
+                <button type="button" class="btn danger" id="topo-disconnect">断网所选</button>
+                <button type="button" class="btn" id="topo-restore" disabled>恢复所选</button>
+                <button type="button" class="btn primary" id="topo-to-demo">在 Demo 中测试</button>
+              </div>
+            </div>
+            <canvas id="topo-canvas" width="1100" height="560" aria-label="cloud edge topology"></canvas>
+            <p class="hint" id="topo-hint">点击边缘节点选中；圆点大小/径向距离反映地理远近。</p>
+          </div>
+          <aside class="topo-side">
+            <h3>链路明细</h3>
+            <div id="topo-link-list" class="topo-link-list"></div>
+            <div class="topo-selected" id="topo-selected">
+              <h4>当前选中</h4>
+              <pre id="topo-selected-json">点击图中边缘节点</pre>
+            </div>
+          </aside>
         </div>
       </section>
 
+      <!-- 03 Single-node Demo -->
       <section class="panel" id="panel-demo">
         <header class="section-title">
           <span class="sec-no">03</span>
           <div>
-            <h2>协同推理演示</h2>
-            <p class="lead">边侧分数 → Qwen3.5 RouteAgent（默认 GGUF Q4）→ 网络仿真 → 云端 LLM（可选实时 LoRA）</p>
+            <h2>单节点测试案例</h2>
+            <p class="lead">
+              选定一个边缘节点，跑：边侧分数 → RouteAgent → 该节点物理链路 → 可选云端 LoRA。
+              多节点全景请用 Topology。
+            </p>
           </div>
         </header>
 
-        <div class="net-panel" id="net-panel">
-          <div class="net-head">
-            <div>
-              <h3>实时网络状态</h3>
-              <p class="hint">边–云链路仿真（RTT / 带宽 / 丢包）· 波形随剖面变化</p>
-            </div>
-            <div class="net-controls">
-              <label>Profile
-                <select id="net-profile">
-                  <option value="good">good</option>
-                  <option value="fair" selected>fair</option>
-                  <option value="weak">weak</option>
-                  <option value="outage">outage</option>
-                </select>
-              </label>
-              <button type="button" id="net-disconnect" class="btn danger">断网</button>
-              <button type="button" id="net-restore" class="btn" disabled>恢复网络</button>
-              <span class="net-chip" id="net-chip">fair</span>
-            </div>
+        <div class="demo-node-bar" id="demo-node-bar">
+          <label>Edge node
+            <select id="demo-edge-node"></select>
+          </label>
+          <div class="demo-link-chip" id="demo-link-chip">
+            <span id="demo-link-city">—</span>
+            <strong id="demo-link-rtt">RTT —</strong>
+            <span id="demo-link-dist">—</span>
+            <span id="demo-link-bw">—</span>
+            <span class="net-chip" id="net-chip">geo</span>
           </div>
+          <div class="demo-link-controls">
+            <label>Link
+              <select id="net-profile">
+                <option value="geo" selected>geo</option>
+                <option value="outage">outage</option>
+              </select>
+            </label>
+            <button type="button" id="net-disconnect" class="btn danger">断网</button>
+            <button type="button" id="net-restore" class="btn" disabled>恢复</button>
+          </div>
+        </div>
+
+        <div class="net-panel compact" id="net-panel">
           <div class="net-stats" id="net-stats">
+            <div><span>City / Dist</span><strong id="net-geo">—</strong></div>
+            <div><span>Prop RTT</span><strong id="net-prop">—</strong></div>
             <div><span>RTT</span><strong id="net-rtt">—</strong></div>
             <div><span>Bandwidth</span><strong id="net-bw">—</strong></div>
             <div><span>Loss</span><strong id="net-loss">—</strong></div>
-            <div><span>Timeout</span><strong id="net-timeout">—</strong></div>
+            <div><span>Congestion</span><strong id="net-cong">—</strong></div>
             <div><span>Last probe</span><strong id="net-probe">—</strong></div>
           </div>
-          <canvas id="net-wave" width="960" height="160" aria-label="network waveform"></canvas>
-          <div class="net-legend">
-            <span class="lg rtt">RTT ms</span>
-            <span class="lg bw">Bandwidth Mbps×10</span>
-            <span class="lg loss">Loss %×10</span>
-          </div>
+          <canvas id="net-wave" width="960" height="120" aria-label="network waveform"></canvas>
         </div>
 
         <div class="demo-layout">
@@ -167,38 +171,47 @@
             <label>Category
               <select id="demo-cat"></select>
             </label>
-            <label>Test image
+            <label>Dataset image
               <select id="demo-img"></select>
             </label>
+            <div class="upload-box">
+              <div class="upload-head">
+                <span>或上传本地图像</span>
+                <button type="button" class="btn-text" id="demo-file-clear" disabled>清除</button>
+              </div>
+              <label class="file-pick" for="demo-file">
+                <span class="file-pick-btn">选择文件</span>
+                <span class="file-pick-name" id="demo-file-name">未选择 · 上传后优先使用</span>
+                <input type="file" id="demo-file" accept="image/png,image/jpeg,image/jpg,image/bmp,image/webp" />
+              </label>
+            </div>
             <label class="check">
               <input type="checkbox" id="demo-route-agent" checked />
-              Use Qwen3.5 RouteAgent (GGUF Q4)
+              Use RouteAgent (GGUF Q4)
             </label>
             <label class="check">
               <input type="checkbox" id="demo-live" />
-              Live cloud LoRA inference
+              Live cloud LoRA
             </label>
-            <button id="demo-run" class="btn primary">Run</button>
-            <button id="demo-load-route" class="btn">Preload RouteAgent (Q4)</button>
-            <button id="demo-load-cloud" class="btn">Preload cloud model</button>
-            <p class="hint" id="demo-status">Ready</p>
+            <button id="demo-run" class="btn primary demo-run">Run</button>
+            <p class="hint" id="demo-status">模型预加载中…</p>
           </aside>
           <div class="demo-main">
             <figure class="figure">
               <img id="demo-preview" alt="preview" />
-              <figcaption>Selected sample</figcaption>
+              <figcaption id="demo-preview-cap">Selected sample</figcaption>
             </figure>
             <div class="viz-grid" id="demo-viz">
               <figure class="figure viz">
                 <img id="viz-edge" alt="edge anomaly map" />
-                <figcaption>边侧热力图（缓存 Anomalib PaDiM 条带；在线默认 Qwen0.8B ML-patch）</figcaption>
+                <figcaption>边侧热力图（缓存 Anomalib；在线默认 Qwen ML-patch）</figcaption>
               </figure>
-              <figure class="figure viz">
+              <figure class="figure viz is-hidden" id="viz-cloud-fig">
                 <img id="viz-cloud" alt="heavy anomalib anomaly map" />
-                <figcaption>对比：云侧重型 Anomalib（PatchCore，非 VLM）· 热力图仅来自传统检测</figcaption>
+                <figcaption>对比：Anomalib PatchCore（仅上云时显示）</figcaption>
               </figure>
             </div>
-            <p class="hint" id="viz-status">热力图来自 Anomalib，不是 Qwen-VL。云端 VLM 只输出下方 JSON（decision / reason）。</p>
+            <p class="hint" id="viz-status">云端 VLM 只输出 JSON（decision / reason），无像素热力图。</p>
             <div class="result-grid" id="demo-pipeline">
               <div class="result-box">
                 <h4>Edge</h4>
@@ -209,23 +222,23 @@
                 <pre id="out-route">—</pre>
               </div>
               <div class="result-box">
-                <h4>Meta</h4>
+                <h4>Link / Meta</h4>
                 <pre id="out-final">—</pre>
               </div>
               <div class="result-box emphasis">
-                <h4>Final Decision</h4>
+                <h4>Final</h4>
                 <pre id="out-decision">—</pre>
               </div>
             </div>
             <div class="llm-panel route-llm" id="route-llm-panel">
               <div class="llm-head">
-                <h3>RouteAgent LLM Output</h3>
+                <h3>RouteAgent Output</h3>
                 <span class="llm-badge" id="route-llm-badge">idle</span>
               </div>
-              <p class="llm-reason" id="route-llm-reason">Run 后显示路由智能体原文 JSON。</p>
+              <p class="llm-reason" id="route-llm-reason">Run 后显示路由 JSON。</p>
               <pre class="llm-raw" id="out-route-raw"></pre>
             </div>
-            <div class="llm-panel" id="llm-panel">
+            <div class="llm-panel is-hidden" id="llm-panel">
               <div class="llm-head">
                 <h3>Cloud LLM Output</h3>
                 <span class="llm-badge" id="llm-badge">idle</span>
@@ -235,35 +248,19 @@
                 <div><span>confidence</span><strong id="llm-conf">—</strong></div>
                 <div><span>defect_type</span><strong id="llm-type">—</strong></div>
               </div>
-              <p class="llm-reason" id="llm-reason">选择带 “LLM” 标记的样本并点击 Run，将显示云端模型原文。</p>
+              <p class="llm-reason" id="llm-reason">上云成功后显示云端模型输出。</p>
               <pre class="llm-raw" id="out-cloud"></pre>
             </div>
           </div>
         </div>
       </section>
-
-      <section class="panel" id="panel-cases">
-        <header class="section-title row">
-          <div class="title-left">
-            <span class="sec-no">04</span>
-            <div>
-              <h2>云端 LLM 复核案例</h2>
-              <p class="lead">Hard samples reviewed by Qwen3-VL-8B + LoRA</p>
-            </div>
-          </div>
-          <label class="inline-label">Category
-            <select id="case-cat"></select>
-          </label>
-        </header>
-        <div class="case-grid" id="case-grid"></div>
-      </section>
     </main>
 
     <footer>
-      <span>CloudEdge-abnormal · research demo</span>
+      <span>CloudEdge-abnormal · multi-edge console</span>
       <span id="health-line">checking…</span>
     </footer>
   </div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260808h"></script>
 </body>
 </html>
