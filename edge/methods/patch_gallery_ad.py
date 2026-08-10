@@ -73,17 +73,18 @@ class PatchGalleryAD:
                 per_layer = [[] for _ in pt.layer_tokens]
                 self.layer_ids = list(pt.layer_ids)
             for li, tok in enumerate(pt.layer_tokens):
-                t = _l2_normalize(tok.float().cpu())
+                # Keep banks on the inference device for fast NN at score time.
+                t = _l2_normalize(tok.float().to(self.device, non_blocking=True))
                 per_layer[li].append(t)
         assert per_layer is not None
         galleries: list[torch.Tensor] = []
         rng = np.random.default_rng(seed)
         for feats in per_layer:
-            g = torch.cat(feats, dim=0) if feats else torch.empty(0)
+            g = torch.cat(feats, dim=0) if feats else torch.empty(0, device=self.device)
             if self.max_gallery_patches and g.shape[0] > self.max_gallery_patches:
                 idx = rng.choice(g.shape[0], size=self.max_gallery_patches, replace=False)
-                g = g[torch.from_numpy(idx)]
-            galleries.append(g)
+                g = g[torch.from_numpy(idx).to(g.device)]
+            galleries.append(g.contiguous())
         self.galleries = galleries
         return time.perf_counter() - t0
 
@@ -93,8 +94,8 @@ class PatchGalleryAD:
         h, w = pt.grid_hw
         maps = []
         for tok, gal in zip(pt.layer_tokens, self.galleries):
-            t = _l2_normalize(tok.float().cpu())
-            dist = _nn_distance(t, gal).numpy().reshape(h, w)
+            t = _l2_normalize(tok.float().to(gal.device, non_blocking=True))
+            dist = _nn_distance(t, gal).detach().float().cpu().numpy().reshape(h, w)
             maps.append(dist.astype(np.float32))
         stack = np.stack(maps, axis=0)  # [L,H,W]
         if stack.shape[0] == 1:

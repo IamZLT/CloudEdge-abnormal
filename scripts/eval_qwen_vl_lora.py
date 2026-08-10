@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Compare zero-shot vs LoRA Qwen-VL on SFT holdout set.
+"""Compare zero-shot vs LoRA Qwen-VL / Qwen3.5 on SFT holdout set.
 
-Env: conda activate base
+Env: conda activate base (Qwen3-VL) or clip (Qwen3.5-0.8B)
 Example:
   CUDA_VISIBLE_DEVICES=3 python scripts/eval_qwen_vl_lora.py --config configs/qwen_vl_lora.yaml
-  CUDA_VISIBLE_DEVICES=3 python scripts/eval_qwen_vl_lora.py --max-images 40
+  CUDA_VISIBLE_DEVICES=5 python scripts/eval_qwen_vl_lora.py --config configs/qwen35_lora.yaml --max-images 60
 """
 from __future__ import annotations
 
@@ -13,18 +13,16 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 import yaml
 from peft import PeftModel
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.vlm import QwenVLClient
-from src.vlm.parse import parse_vlm_json
+from src.vlm.qwen_client import resolve_vlm_model_class
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -51,9 +49,7 @@ class LoRAQwenClient(QwenVLClient):
     """QwenVLClient with PEFT adapter loaded."""
 
     def __init__(self, model_path: str, adapter_path: str, **kwargs):
-        # delay parent init pattern: load base then adapter
-        from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
-        from src.vlm.qwen_client import VLMResult  # noqa: F401
+        from transformers import AutoProcessor
 
         self.model_path = str(model_path)
         self.adapter_path = str(adapter_path)
@@ -61,6 +57,7 @@ class LoRAQwenClient(QwenVLClient):
         self.role = kwargs.get("role", "lora")
         self.max_new_tokens = int(kwargs.get("max_new_tokens", 128))
         self.prompt = kwargs.get("prompt")
+        model_family = kwargs.get("model_family")
 
         dtype_name = str(kwargs.get("dtype", "bfloat16")).lower()
         torch_dtype = {
@@ -77,8 +74,10 @@ class LoRAQwenClient(QwenVLClient):
         else:
             device_map = None
 
+        ModelCls, fam = resolve_vlm_model_class(model_path, model_family)
+        self.model_family = fam
         self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-        base = Qwen3VLForConditionalGeneration.from_pretrained(
+        base = ModelCls.from_pretrained(
             model_path,
             dtype=torch_dtype,
             device_map=device_map,
@@ -146,15 +145,18 @@ def main():
         n_ng = min(len(ng), args.max_images - n_ok)
         rows = ok[:n_ok] + ng[:n_ng]
 
-    model_path = cfg["model"]["model_path"]
+    model_cfg = cfg["model"]
+    model_path = model_cfg["model_path"]
+    model_family = model_cfg.get("model_family")
     device = args.device or cfg.get("train", {}).get("device", "cuda:0")
     prompt = cfg.get("prompt")
-    dtype = cfg["model"].get("dtype", "bfloat16")
+    dtype = model_cfg.get("dtype", "bfloat16")
 
     report = {
         "holdout_path": str(holdout_path),
         "n_eval": len(rows),
         "base_model": model_path,
+        "model_family": model_family,
         "adapter": str(adapter) if adapter.exists() else None,
     }
 
@@ -167,6 +169,7 @@ def main():
             max_new_tokens=128,
             role="zeroshot",
             prompt=prompt,
+            model_family=model_family,
         )
         report["zeroshot"] = run_client(zs, rows, "zs")
         # free memory before loading adapter
@@ -185,6 +188,7 @@ def main():
         max_new_tokens=128,
         role="lora",
         prompt=prompt,
+        model_family=model_family,
     )
     report["lora"] = run_client(lora, rows, "lora")
 
@@ -199,6 +203,7 @@ def main():
         "# Qwen-VL LoRA vs Zero-shot (holdout)",
         "",
         f"- Base: `{model_path}`",
+        f"- Family: `{model_family or 'auto'}`",
         f"- Adapter: `{adapter}`",
         f"- N: {len(rows)}",
         "",
@@ -214,6 +219,27 @@ def main():
     )
     if zs_m:
         lines += ["", f"- ΔF1 (LoRA - Zero-shot): **{lo_m['f1'] - zs_m['f1']:+.4f}**", ""]
+
+    # Cross-model reference (4B / 8B historical holdout N=60)
+    lines += [
+        "## Reference (same protocol, N=60)",
+        "",
+        "| Model | ZS Acc | ZS F1 | LoRA Acc | LoRA F1 |",
+        "|-------|--------|-------|----------|---------|",
+        "| Qwen3-VL-4B | 0.60 | 0.33 | 0.83 | 0.85 |",
+        "| Qwen3-VL-8B | 0.68 | 0.54 | 0.85 | 0.85 |",
+    ]
+    if zs_m:
+        lines.append(
+            f"| Qwen3.5-0.8B | {zs_m['accuracy']:.2f} | {zs_m['f1']:.2f} | "
+            f"{lo_m['accuracy']:.2f} | {lo_m['f1']:.2f} |"
+        )
+    else:
+        lines.append(
+            f"| Qwen3.5-0.8B | — | — | {lo_m['accuracy']:.2f} | {lo_m['f1']:.2f} |"
+        )
+    lines.append("")
+
     out_md.write_text("\n".join(lines), encoding="utf-8")
     print("\n" + "\n".join(lines))
     print(f"Wrote {out_md}")

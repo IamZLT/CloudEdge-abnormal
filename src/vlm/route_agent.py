@@ -1,4 +1,4 @@
-"""Qwen3.5 edge RouteAgent — decide whether to upload a sample to the cloud.
+"""Qwen3.5 edge RouteAgent — decide upload + short detection analysis.
 
 Backends:
   - hf   : transformers Qwen3_5ForConditionalGeneration (bf16/fp16)
@@ -8,11 +8,12 @@ vision_mode:
   - text|auto (default): reuse edge-AD CONTEXT; skip 2nd vision encode
   - full: attach product image again (mmproj / HF vision)
 
-When skipping the image, enforce_context_rules (default True) snaps upload to
-the documented CONTEXT heuristic so tiny VLMs cannot ignore score_margin rules.
+Default policy: LLM decides upload from banded fields (category, n_gallery,
+edge_decision, uncertainty, link_tier, cloud_pressure). No post-LLM routing rule
+overwrites a valid answer. CRR may run for logging but is not in CONTEXT.
 
-Network outage is a hard gate (no LLM call). Parse failures fall back to
-hard_margin heuristic.
+Optional legacy: enforce_context_rules=true snaps upload to CRR/baseline rules;
+hard_block_on_outage=true short-circuits before the LLM call.
 """
 from __future__ import annotations
 
@@ -32,21 +33,47 @@ from PIL import Image
 DEFAULT_MODEL = "/data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B"
 DEFAULT_GGUF_DIR = str(Path(__file__).resolve().parents[2] / "model_card" / "qwen3.5VL-0.8B-q")
 
-DEFAULT_ROUTE_PROMPT = """You are an edge routing agent for industrial defect inspection.
-Given CONTEXT (and optionally a product image), decide whether to upload to a stronger cloud VLM.
+DEFAULT_ROUTE_PROMPT = """You are a cloud-edge routing agent for industrial defect inspection.
 
-The edge AD has already scored the image; CONTEXT summarizes that evidence.
-When no image is attached, rely entirely on CONTEXT numbers and rules.
+Route only; never reclassify OK/NG. Balance cloud-review benefit against network
+and cloud cost.
+
+Field semantics:
+- edge_decision is a LABEL ONLY. NG does not mean uncertain; OK does not mean
+  certain. Never use OK/NG as evidence for upload.
+- n_gallery measures edge reference support: >=8 is adequate, 1-7 is limited,
+  0 means no gallery. More gallery shots improve reliability, never reduce it.
+- edge_uncertainty: high = high review benefit; mid = moderate; low = little.
+- link_tier: good = cheap, fair = acceptable, weak = costly/risky,
+  outage = impossible.
+- cloud_pressure: low = available, mid = selective use, high = costly/queued.
+
+Decision policy:
+- outage or cloud_pressure=high: local.
+- low uncertainty with n_gallery>=8: local, regardless of edge_decision.
+- high uncertainty: upload only with good/fair link and low/mid cloud pressure.
+- mid uncertainty: upload only with good link and low cloud pressure.
+- n_gallery=0: upload with good/fair link unless cloud pressure is high.
+- otherwise local.
+
+Worked JSON examples:
+INPUT  {"n_gallery":16,"edge_decision":"NG","edge_uncertainty":"low","link_tier":"fair","cloud_pressure":"low"}
+OUTPUT {"route":"LOCAL","confidence":0.95,"reason":"Low uncertainty with an adequate gallery gives little review benefit."}
+
+INPUT  {"n_gallery":16,"edge_decision":"OK","edge_uncertainty":"high","link_tier":"fair","cloud_pressure":"low"}
+OUTPUT {"route":"CLOUD","confidence":0.90,"reason":"High uncertainty justifies review on an acceptable link with available cloud."}
+
+INPUT  {"n_gallery":16,"edge_decision":"NG","edge_uncertainty":"mid","link_tier":"weak","cloud_pressure":"low"}
+OUTPUT {"route":"LOCAL","confidence":0.90,"reason":"Moderate review benefit does not justify a costly weak link."}
+
+INPUT  {"n_gallery":16,"edge_decision":"NG","edge_uncertainty":"high","link_tier":"good","cloud_pressure":"high"}
+OUTPUT {"route":"LOCAL","confidence":0.90,"reason":"High cloud pressure outweighs the benefit of review even with high uncertainty."}
+
+INPUT  {"n_gallery":0,"edge_decision":"OK","edge_uncertainty":"low","link_tier":"good","cloud_pressure":"low"}
+OUTPUT {"route":"CLOUD","confidence":0.90,"reason":"No gallery makes edge AD unsupported while network and cloud costs are low."}
 
 Reply with ONLY one JSON object (no markdown):
-{"upload": true or false, "confidence": float 0-1, "reason": "short English"}
-
-Rules (priority order; aligned with Cost–Risk Routing / CRR):
-1. If network_profile is outage or link is unavailable → upload=false.
-2. If n_gallery==0 (cold start) and network is usable → prefer upload=true.
-3. Prefer upload when uncertain (score near threshold) AND the link cost is acceptable.
-4. Prefer local when score is far from threshold (confident) OR the link is very weak.
-5. Prefer local when the edge score is clearly OK or clearly NG on a usable link.
+{"route":"LOCAL" or "CLOUD","confidence":0-1,"reason":"brief benefit-vs-cost explanation"}
 """
 
 
@@ -83,28 +110,104 @@ class RouteContext:
     network_profile: str = "fair"
     network: dict[str, Any] = field(default_factory=dict)
     hard_margin: float = 0.05
+    # Optional CRR dict (kept for logging / rules_snap; not shown in CONTEXT)
+    crr: dict[str, Any] | None = None
+    # Cloud load snapshot: inflight / queue / max_inflight → cloud_pressure
+    cloud: dict[str, Any] | None = None
     # None → use RouteAgent.vision_mode; True/False overrides
     include_image: bool | None = None
 
     def score_margin(self) -> float:
         return abs(float(self.edge_score) - float(self.edge_thr))
 
-    def context_text(self) -> str:
+    def _edge_uncertainty(self) -> str:
+        """Compress margin vs hard_margin into high|mid|low."""
+        m = self.score_margin()
+        h0 = max(float(self.hard_margin or 0.05), 1e-6)
+        ratio = m / h0
+        if ratio < 1.0:
+            return "high"
+        if ratio < 2.0:
+            return "mid"
+        return "low"
+
+    def _link_tier(self) -> str:
+        """Derive link tier from live simulated link stats only (no static profile names)."""
         net = dict(self.network or {})
-        net.setdefault("profile", self.network_profile)
-        return (
-            f"CONTEXT:\n"
-            f"- category: {self.category}\n"
-            f"- n_gallery: {int(self.n_gallery)}\n"
-            f"- edge_decision: {self.edge_decision}\n"
-            f"- edge_score: {float(self.edge_score):.6f}\n"
-            f"- edge_threshold: {float(self.edge_thr):.6f}\n"
-            f"- score_margin: {self.score_margin():.6f}\n"
-            f"- hard_margin: {float(self.hard_margin):.6f}\n"
-            f"- network_profile: {self.network_profile}\n"
-            f"- network: {json.dumps(net, ensure_ascii=False)}\n"
-            f"- ad_vision_done: true\n"
-        )
+        if bool(net.get("outage")) or str(self.network_profile or net.get("profile") or "").lower() == "outage":
+            return "outage"
+        try:
+            rtt = float(net.get("rtt_ms") or net.get("prop_rtt_ms") or 0.0)
+            bw = float(net.get("bandwidth_mbps") or 0.0)
+            loss = float(net.get("loss_prob") or 0.0)
+        except (TypeError, ValueError):
+            return "fair"
+        # Thresholds on measured / geo-simulated quantities
+        if rtt >= 150 or (bw > 0 and bw <= 2.0) or loss >= 0.1:
+            return "weak"
+        if 0 < rtt < 40 and (bw <= 0 or bw >= 40) and loss < 0.02:
+            return "good"
+        return "fair"
+
+    def _cloud_pressure(self) -> str:
+        """Map cloud inflight+queue vs max_inflight → low|mid|high."""
+        cloud = dict(self.cloud or {})
+        try:
+            max_inf = max(int(cloud.get("max_inflight") or 2), 1)
+            load = int(cloud.get("inflight") or 0) + int(cloud.get("queue") or 0)
+        except (TypeError, ValueError):
+            return "low"
+        ratio = float(load) / float(max_inf)
+        if ratio >= 1.0:
+            return "high"
+        if ratio >= 0.5:
+            return "mid"
+        return "low"
+
+    def context_text(self) -> str:
+        """Compact banded CONTEXT for LLM routing (no CRR prior)."""
+        return "\n".join(
+            [
+                "CONTEXT:",
+                f"- category: {self.category}",
+                f"- n_gallery: {int(self.n_gallery)}",
+                (
+                    f"- edge_decision: {self.edge_decision}  "
+                    f"# label only; never use OK/NG itself as upload evidence"
+                ),
+                f"- edge_uncertainty: {self._edge_uncertainty()}",
+                f"- link_tier: {self._link_tier()}",
+                f"- cloud_pressure: {self._cloud_pressure()}",
+            ]
+        ) + "\n"
+
+
+def hard_route_allows_upload(ctx: RouteContext) -> tuple[bool, str]:
+    """Whether upload=true is allowed under the prompt hard rules.
+
+    Only gates / rejects uploads; never forces upload=true.
+    """
+    unc = ctx._edge_uncertainty()
+    link = ctx._link_tier()
+    pressure = ctx._cloud_pressure()
+    cold = int(ctx.n_gallery) <= 0
+
+    if link == "outage" or pressure == "high":
+        return False, "R1_outage_or_cloud_high"
+    if unc == "low" and not cold:
+        return False, "R2_low_uncertainty"
+    if link == "weak" and unc != "high" and not cold:
+        return False, "R3_weak_link"
+    if pressure == "mid" and unc != "high" and not cold:
+        return False, "R4_cloud_mid"
+    if unc == "mid" and not cold:
+        return False, "R6_mid_default_local"
+    # R5: hard case or cold-start on a usable, free cloud
+    if pressure != "low" or link in {"outage", "weak"}:
+        return False, "R5_link_or_cloud_not_ok"
+    if cold or unc == "high":
+        return True, "R5_eligible"
+    return False, "R5_not_eligible"
 
 
 @dataclass
@@ -112,15 +215,17 @@ class RouteDecision:
     upload: bool
     confidence: float
     reason: str
+    decision: str | None = None  # OK | NG from LLM (optional)
     latency_ms: float = 0.0
     parse_ok: bool = True
-    source: str = "llm"  # llm | hard_gate | heuristic_fallback | llm_rules_snapped
+    source: str = "llm"  # llm | hard_gate | parse_fail_local | llm_rules_snapped | ...
     raw: str = ""  # canonical final JSON (matches upload/reason)
-    raw_model: str = ""  # unmodified model text (may disagree before rules_snap)
+    raw_model: str = ""  # unmodified model text
     network_profile: str = "fair"
     peak_mem_mb: float | None = None
     include_image: bool = False
     vision_mode: str = "text"
+    retries: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -149,6 +254,21 @@ def parse_route_json(text: str) -> dict[str, Any]:
         upload = upload.strip().lower() in {"1", "true", "yes", "y"}
     elif upload is not None:
         upload = bool(upload)
+    if upload is None:
+        route = str(payload.get("route") or "").strip().upper()
+        if route in {"CLOUD", "UPLOAD", "REMOTE"}:
+            upload = True
+        elif route in {"LOCAL", "EDGE", "STAY_LOCAL"}:
+            upload = False
+
+    decision_raw = payload.get("decision") or payload.get("edge_decision") or payload.get("label")
+    decision: str | None = None
+    if isinstance(decision_raw, str) and decision_raw.strip():
+        d = decision_raw.strip().upper()
+        if d in {"OK", "GOOD", "NORMAL", "0"}:
+            decision = "OK"
+        elif d in {"NG", "NOGOOD", "DEFECT", "ABNORMAL", "1"}:
+            decision = "NG"
 
     try:
         confidence = float(payload.get("confidence", 0.5 if parse_ok else 0.3))
@@ -158,6 +278,7 @@ def parse_route_json(text: str) -> dict[str, Any]:
     reason = str(payload.get("reason", "") or "")
     return {
         "upload": upload,
+        "decision": decision,
         "confidence": confidence,
         "reason": reason,
         "parse_ok": parse_ok and upload is not None,
@@ -261,7 +382,7 @@ class RouteAgent:
         dtype: str = "bfloat16",
         max_new_tokens: int = 96,
         prompt: str | None = None,
-        hard_block_on_outage: bool = True,
+        hard_block_on_outage: bool = False,
         backend: str = "hf",
         mmproj_gguf: str | Path | None = None,
         n_gpu_layers: int = -1,
@@ -269,6 +390,8 @@ class RouteAgent:
         verbose: bool = False,
         vision_mode: str = "text",
         enforce_context_rules: bool | None = None,
+        hard_route_guard: bool | None = None,
+        parse_retry: int = 1,
     ):
         self.backend = str(backend or "hf").lower()
         if self.backend in {"q4", "quant", "llama", "llama_cpp", "llama.cpp"}:
@@ -284,12 +407,18 @@ class RouteAgent:
         self.verbose = bool(verbose)
         # text|auto: skip 2nd vision encode (reuse AD CONTEXT); full: re-encode image
         self.vision_mode = str(vision_mode or "text").lower()
-        # When skipping image, snap upload to CONTEXT rules (0.8B often flips bits otherwise).
-        # Default: on for text/auto, off for full multimodal.
+        # Default off: LLM decides; CRR/outage are CONTEXT hints only.
+        # Set true to restore legacy rules_snap behavior.
         if enforce_context_rules is None:
-            self.enforce_context_rules = self.vision_mode not in {"full", "image", "multimodal", "mm", "vision"}
+            self.enforce_context_rules = False
         else:
             self.enforce_context_rules = bool(enforce_context_rules)
+        # Optional legacy safety guard. Default off: valid LLM output is final.
+        if hard_route_guard is None:
+            self.hard_route_guard = False
+        else:
+            self.hard_route_guard = bool(hard_route_guard)
+        self.parse_retry = max(0, int(parse_retry))
 
         self.processor = None
         self.model = None
@@ -300,6 +429,7 @@ class RouteAgent:
             "backend": self.backend,
             "vision_mode": self.vision_mode,
             "enforce_context_rules": self.enforce_context_rules,
+            "hard_route_guard": self.hard_route_guard,
         }
 
         if self.backend == "gguf":
@@ -452,7 +582,7 @@ class RouteAgent:
             dtype=str(cfg.get("dtype") or "bfloat16"),
             max_new_tokens=int(cfg.get("max_new_tokens") or 96),
             prompt=cfg.get("prompt"),
-            hard_block_on_outage=bool(cfg.get("hard_block_on_outage", True)),
+            hard_block_on_outage=bool(cfg.get("hard_block_on_outage", False)),
             backend=backend,
             mmproj_gguf=mmproj,
             n_gpu_layers=int(cfg.get("n_gpu_layers", -1)),
@@ -460,6 +590,8 @@ class RouteAgent:
             verbose=bool(cfg.get("verbose", False)),
             vision_mode=str(cfg.get("vision_mode") or "text"),
             enforce_context_rules=cfg.get("enforce_context_rules"),
+            hard_route_guard=cfg.get("hard_route_guard"),
+            parse_retry=int(cfg.get("parse_retry", 1)),
         )
 
     def _decide_hf(
@@ -578,11 +710,17 @@ class RouteAgent:
                 upload=False,
                 confidence=1.0,
                 reason=reason,
+                decision=str(ctx.edge_decision or "OK"),
                 latency_ms=0.0,
                 parse_ok=True,
                 source="hard_gate",
                 raw=json.dumps(
-                    {"upload": False, "confidence": 1.0, "reason": reason},
+                    {
+                        "decision": str(ctx.edge_decision or "OK"),
+                        "upload": False,
+                        "confidence": 1.0,
+                        "reason": reason,
+                    },
                     ensure_ascii=False,
                 ),
                 network_profile=profile,
@@ -598,25 +736,61 @@ class RouteAgent:
                 pil = ctx.image.convert("RGB")
 
         user_text = f"{self.prompt.strip()}\n\n{ctx.context_text()}"
-        if self.backend == "gguf":
-            raw, latency_ms, peak = self._decide_gguf(pil, user_text, include_image=include_image)
-        else:
-            raw, latency_ms, peak = self._decide_hf(pil, user_text, include_image=include_image)
+        total_latency = 0.0
+        peak: float | None = None
+        raw = ""
+        parsed: dict[str, Any] = {}
+        retries = 0
 
-        parsed = parse_route_json(raw)
+        for attempt in range(1 + self.parse_retry):
+            if attempt > 0:
+                retries = attempt
+                user_text = (
+                    f"{self.prompt.strip()}\n\n{ctx.context_text()}\n"
+                    "RETRY: previous answer was not valid JSON. "
+                    'Reply with ONLY: {"route":"LOCAL"|"CLOUD","confidence":0-1,"reason":"short"}'
+                )
+            if self.backend == "gguf":
+                raw, latency_ms, peak_i = self._decide_gguf(
+                    pil, user_text, include_image=include_image
+                )
+            else:
+                raw, latency_ms, peak_i = self._decide_hf(
+                    pil, user_text, include_image=include_image
+                )
+            total_latency += float(latency_ms)
+            if peak_i is not None:
+                peak = peak_i if peak is None else max(peak, peak_i)
+            parsed = parse_route_json(raw)
+            if parsed.get("parse_ok") and parsed.get("upload") is not None:
+                break
+
+        # Detection label always comes from edge AD — LLM only routes.
+        edge_label = str(ctx.edge_decision or "OK")
+
         if not parsed.get("parse_ok") or parsed.get("upload") is None:
-            upload = heuristic_upload(ctx)
-            conf = float(parsed.get("confidence") or 0.3)
-            reason = parsed.get("reason") or "heuristic_fallback: parse_failed"
+            # Engineering fallback only — do not silently hand control to CRR.
+            upload = False
+            conf = float(parsed.get("confidence") or 0.2)
+            reason = (
+                (parsed.get("reason") or "parse_failed")
+                + " | parse_fail_local: stay local after retry"
+            )
             return RouteDecision(
                 upload=upload,
                 confidence=conf,
                 reason=reason,
-                latency_ms=float(latency_ms),
+                decision=edge_label,
+                latency_ms=float(total_latency),
                 parse_ok=False,
-                source="heuristic_fallback",
+                source="parse_fail_local",
                 raw=json.dumps(
-                    {"upload": upload, "confidence": conf, "reason": reason},
+                    {
+                        "upload": upload,
+                        "confidence": conf,
+                        "reason": reason,
+                        "edge_decision": edge_label,
+                    },
                     ensure_ascii=False,
                 ),
                 raw_model=raw,
@@ -624,31 +798,43 @@ class RouteAgent:
                 peak_mem_mb=peak,
                 include_image=include_image,
                 vision_mode=self.vision_mode,
+                retries=retries,
             )
 
         upload = bool(parsed["upload"])
         source = "llm"
         reason = str(parsed.get("reason") or "")
         conf = float(parsed["confidence"])
-        # Text / reuse path: AD already summarized the image — keep upload consistent
-        # with the documented CONTEXT rules (tiny VLMs often ignore them).
-        if (not include_image) and self.enforce_context_rules:
+        # Enforce prompt hard rules: may only reject illegal upload=true.
+        if self.hard_route_guard and upload:
+            allowed, rule = hard_route_allows_upload(ctx)
+            if not allowed:
+                upload = False
+                reason = (reason + " | " if reason else "") + f"hard_guard:{rule}"
+                source = "llm_hard_guarded"
+        # Legacy: snap upload to CRR/baseline when explicitly enabled.
+        if self.enforce_context_rules:
             ruled = heuristic_upload(ctx)
             if upload != ruled:
                 reason = (reason + " | " if reason else "") + f"rules_snap: upload->{ruled}"
                 upload = ruled
                 source = "llm_rules_snapped"
 
-        # `raw` always mirrors the *final* decision so UI never shows a conflicting JSON.
         final_raw = json.dumps(
-            {"upload": upload, "confidence": conf, "reason": reason},
+            {
+                "upload": upload,
+                "confidence": conf,
+                "reason": reason,
+                "edge_decision": edge_label,
+            },
             ensure_ascii=False,
         )
         return RouteDecision(
             upload=upload,
             confidence=conf,
             reason=reason,
-            latency_ms=float(latency_ms),
+            decision=edge_label,
+            latency_ms=float(total_latency),
             parse_ok=True,
             source=source,
             raw=final_raw,
@@ -657,6 +843,7 @@ class RouteAgent:
             peak_mem_mb=peak,
             include_image=include_image,
             vision_mode=self.vision_mode,
+            retries=retries,
         )
 
 

@@ -53,8 +53,10 @@ def run_route_decision(
         network_profile=profile,
         network=net,
         hard_margin=hard_margin,
+        cloud=cloud.to_dict() if hasattr(cloud, "to_dict") else dict(cloud or {}),
     )
 
+    use_llm = False
     tokens = push_routing_context(cloud=cloud, edge_node_id=node.id, recent_cloud=recent)
     try:
         verdict = rule_decide(
@@ -64,9 +66,17 @@ def run_route_decision(
             edge_node_id=node.id,
             recent_cloud=recent,
         )
+        # Keep CRR for UI/logging/rules_snap; LLM CONTEXT does not include CRR priors.
+        ctx.crr = verdict.to_dict()
+        ra_cfg = dict(collab.get("route_agent") or {})
+        cascade = bool(ra_cfg.get("cascade_skip_low_uncertainty", False))
+        unc = ctx._edge_uncertainty()
+        cold = int(n_gallery) <= 0
+        # Default: always RouteAgent LLM when use_agent. Optional cascade skips LLM on low unc.
+        use_llm = bool(use_agent) and (not cascade or unc in {"mid", "high"} or cold)
 
         route_info: dict[str, Any]
-        if use_agent:
+        if use_llm:
             try:
                 agent = model_service.get_route_agent()
                 dec = agent.decide(ctx)
@@ -75,37 +85,57 @@ def run_route_decision(
                 route_info["backend"] = getattr(agent, "backend", meta.get("backend"))
                 route_info["weight_source"] = meta.get("weight_source")
                 route_info["gpu_footprint_mb"] = meta.get("gpu_footprint_mb")
+                route_info["llm_invoked"] = True
             except Exception as exc:  # noqa: BLE001
                 route_info = {
-                    "upload": verdict.upload,
+                    "upload": False,
+                    "decision": decision,
                     "confidence": 0.0,
-                    "reason": f"route_agent_unavailable -> {verdict.algorithm}: {exc}",
-                    "source": "collab_routing_fallback",
+                    "reason": f"route_agent_unavailable -> stay local: {exc}",
+                    "source": "agent_unavailable_local",
                     "parse_ok": False,
                     "latency_ms": 0.0,
                     "raw": "",
                     "network_profile": profile,
-                    "backend": (collab.get("route_agent") or {}).get("backend", "gguf"),
+                    "backend": ra_cfg.get("backend", "gguf"),
+                    "llm_invoked": False,
                 }
         else:
+            why = (
+                f"cascade: uncertainty={unc} → CRR without LLM"
+                if use_agent and cascade
+                else verdict.reason
+            )
             route_info = {
                 "upload": verdict.upload,
+                "decision": decision,
                 "confidence": 1.0 if profile == "outage" else 0.7,
-                "reason": verdict.reason,
-                "source": f"collab_routing:{verdict.algorithm}",
+                "reason": why,
+                "source": (
+                    f"collab_routing_cascade:{verdict.algorithm}"
+                    if use_agent and cascade
+                    else f"collab_routing:{verdict.algorithm}"
+                ),
                 "parse_ok": True,
                 "latency_ms": 0.0,
                 "raw": "",
                 "network_profile": profile,
+                "llm_invoked": False,
+                "edge_uncertainty": unc,
             }
     finally:
         reset_routing_context(tokens)
 
     route_info["collab_routing"] = verdict.to_dict()
-    route_info["upload"] = bool(verdict.upload)
-    if str(route_info.get("source") or "").startswith("collab_routing") or not route_info.get(
-        "reason"
-    ):
+    route_info["crr_suggest_upload"] = bool(verdict.upload)
+    # Detection label is always edge AD here; cloud may override later in run_demo.
+    route_info["decision"] = decision
+    route_info["analysis"] = route_info.get("reason")
+    if not use_llm:
+        route_info["upload"] = bool(verdict.upload)
+        if not route_info.get("reason"):
+            route_info["reason"] = verdict.reason
+    elif not route_info.get("reason"):
         route_info["reason"] = verdict.reason
 
     upload_want = bool(route_info.get("upload"))
@@ -237,17 +267,21 @@ def run_demo(
             "cloud": (cached.get("cloud") if went_cloud else None),
         }
 
-    result["final_decision"] = (edge or {}).get("edge_pred") or (
+    ra = route_pack.get("route_agent") or {}
+    edge_pred = (edge or {}).get("edge_pred")
+    # Final detection: edge AD locally; cloud overrides only after successful upload.
+    result["final_decision"] = edge_pred or (
         cached.get("final_decision") if cached and went_cloud else None
     )
+    result["route_analysis"] = ra.get("analysis") or ra.get("reason")
 
     if not went_cloud:
         result["cloud_live"] = {
             "skipped": True,
             "reason": (
-                "network fallback - edge local"
+                "network fallback - keep edge AD decision"
                 if path_type == "LOCAL_NET_FALLBACK"
-                else route_pack["route_agent"].get("reason") or "RouteAgent: stay local"
+                else ra.get("reason") or "stay local (edge AD final)"
             ),
         }
         return result

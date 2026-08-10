@@ -106,9 +106,10 @@ collab:
       outage_rate_per_day: 0.05
       outage_duration_s: 45.0
 
-  # legacy static profiles (only if network_env.enabled=false)
+  # legacy static profiles — unused when network_env.enabled=true (default).
+  # Routing CONTEXT always uses live RTT/BW/loss from the geo sim, not these names.
   network:
-    profile: fair   # good|fair|weak|outage|custom|geo
+    profile: geo
     seed: 42
   # Qwen3.5-0.8B multimodal agent: decide upload vs local
   # default: gguf Q4_K_M LLM + mmproj-F16 (llama-cpp-python, CUDA preferred)
@@ -118,8 +119,15 @@ collab:
     backend: gguf
     # text|auto: reuse AD CONTEXT, skip 2nd vision encode; full: re-encode image
     vision_mode: text
-    # when vision_mode=text, snap upload to collab.route_policy (CRR / baseline)
-    enforce_context_rules: true
+    # LLM decides upload; CRR is not included in CONTEXT. Legacy rules_snap stays off.
+    enforce_context_rules: false
+    # false: a valid LLM upload decision is final (no post-LLM rule overwrite).
+    hard_route_guard: false
+    # Do not short-circuit LLM on outage; model sees link_tier=outage in CONTEXT.
+    hard_block_on_outage: false
+    # false: always call RouteAgent LLM for upload decision (no CRR-only cascade skip).
+    cascade_skip_low_uncertainty: false
+    parse_retry: 1
     model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
     gguf_dir: model_card/qwen3.5VL-0.8B-q
     # mmproj_gguf: model_card/qwen3.5VL-0.8B-q/Qwen3.5-0.8B-mmproj-F16.gguf
@@ -128,7 +136,6 @@ collab:
     max_new_tokens: 96
     n_ctx: 4096
     n_gpu_layers: -1
-    hard_block_on_outage: true
 
 mlflow:
   enabled: true

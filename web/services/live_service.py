@@ -26,7 +26,7 @@ _stats = {
     "started_at": None,
 }
 _interval_s = 2.0
-_use_route_agent = False  # CRR rules only — keep live loop snappy
+_use_route_agent = True  # LLM primary; CRR injected as CONTEXT advisory
 _live_cloud = False
 
 

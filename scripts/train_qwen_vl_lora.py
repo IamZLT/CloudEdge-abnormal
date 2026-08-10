@@ -21,7 +21,6 @@ from PIL import Image
 from torch.utils.data import Dataset
 from transformers import (
     AutoProcessor,
-    Qwen3VLForConditionalGeneration,
     Trainer,
     TrainingArguments,
 )
@@ -159,6 +158,32 @@ def maybe_freeze_vision(model):
             param.requires_grad = False
 
 
+def resolve_model_family(model_cfg: dict) -> str:
+    """Return qwen3_vl | qwen3_5 from config or model_path heuristics."""
+    fam = str(model_cfg.get("model_family") or "").strip().lower()
+    if fam in {"qwen3_vl", "qwen3vl", "vl"}:
+        return "qwen3_vl"
+    if fam in {"qwen3_5", "qwen35", "qwen3.5"}:
+        return "qwen3_5"
+    path = str(model_cfg.get("model_path") or "").lower()
+    if "qwen3.5" in path or "qwen3_5" in path or "qwen35" in path:
+        return "qwen3_5"
+    return "qwen3_vl"
+
+
+def load_causal_vlm(model_path: str, *, model_family: str, dtype, device_map):
+    if model_family == "qwen3_5":
+        from transformers import Qwen3_5ForConditionalGeneration as ModelCls
+    else:
+        from transformers import Qwen3VLForConditionalGeneration as ModelCls
+    return ModelCls.from_pretrained(
+        model_path,
+        dtype=dtype,
+        device_map=device_map,
+        trust_remote_code=True,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(ROOT / "configs/qwen_vl_lora.yaml"))
@@ -189,6 +214,8 @@ def main():
         "fp16": torch.float16,
     }.get(str(model_cfg.get("dtype", "bfloat16")).lower(), torch.bfloat16)
 
+    family = resolve_model_family(model_cfg)
+    print(f"[train] model_family={family}")
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     device = str(train_cfg.get("device", "auto"))
     if device == "auto" or ("," in device and "cuda" in device):
@@ -198,12 +225,7 @@ def main():
     else:
         device_map = None
 
-    model = Qwen3VLForConditionalGeneration.from_pretrained(
-        model_path,
-        dtype=dtype,
-        device_map=device_map,
-        trust_remote_code=True,
-    )
+    model = load_causal_vlm(model_path, model_family=family, dtype=dtype, device_map=device_map)
     if bool(lora_cfg.get("freeze_vision", True)):
         maybe_freeze_vision(model)
 
@@ -261,6 +283,7 @@ def main():
     processor.save_pretrained(str(output_dir))
     meta = {
         "base_model": model_path,
+        "model_family": family,
         "adapter_dir": str(output_dir),
         "train_jsonl": str(train_jsonl),
         "lora": lora_cfg,

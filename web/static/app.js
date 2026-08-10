@@ -874,14 +874,27 @@ function renderRouteAgent(ra, pathType, netOut) {
   const upload = !!ra.upload;
   badge.textContent = upload ? "upload" : "local";
   badge.className = `llm-badge ${upload ? "ng" : "ok"}`;
-  // Show final decision only (after rules_snap); hide model draft mismatches.
-  let reason = ra.reason || "(no reason)";
-  reason = reason.replace(/\s*\|\s*rules_snap:[^|]*/g, "").trim();
-  $("#route-llm-reason").textContent = reason;
+  let reason = ra.analysis || ra.reason || "(no reason)";
+  const crr = ra.collab_routing || {};
+  const crrSug = ra.crr_suggest_upload ?? crr.upload;
+  const agree =
+    crrSug == null ? null : Boolean(crrSug) === Boolean(upload);
+  const who = ra.llm_invoked ? "LLM路由" : "CRR级联";
+  const hint =
+    crrSug == null
+      ? ` · ${who}`
+      : agree
+        ? ` · ${who} · 与 CRR 一致`
+        : ` · ${who} · 与 CRR 不同(参谋=${crrSug ? "upload" : "local"})`;
+  $("#route-llm-reason").textContent = `${reason}${hint}`;
   const finalJson = {
     upload: ra.upload,
     confidence: ra.confidence,
     reason,
+    edge_decision: ra.decision || null,
+    crr_suggest_upload: crrSug ?? null,
+    llm_invoked: !!ra.llm_invoked,
+    source: ra.source,
   };
   if (rawEl) {
     rawEl.textContent = JSON.stringify(finalJson, null, 2);
@@ -890,8 +903,11 @@ function renderRouteAgent(ra, pathType, netOut) {
     {
       path: pathType,
       upload_want: upload,
+      edge_decision: ra.decision || null,
       confidence: ra.confidence,
       source: ra.source,
+      llm_invoked: !!ra.llm_invoked,
+      crr_suggest_upload: crrSug ?? null,
       backend: ra.backend || null,
       network_profile: ra.network_profile,
       route_latency_ms: ra.latency_ms,
@@ -1569,8 +1585,8 @@ async function toggleLive() {
       switchPanel("topology");
       clearCloudBoard();
       const fd = new FormData();
-      fd.append("interval_s", "2.0");
-      fd.append("use_route_agent", "false");
+      fd.append("interval_s", "3.5");
+      fd.append("use_route_agent", "true");
       fd.append("live_cloud", "false");
       const res = await fetch("/api/fleet/live/start", { method: "POST", body: fd });
       const st = await res.json();

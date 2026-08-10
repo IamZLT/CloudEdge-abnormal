@@ -1,0 +1,55 @@
+# Qwen3.5-0.8B LoRA fine-tune (same protocol as 4B/8B)
+# Env: conda activate clip (transformers>=5.3 for Qwen3_5ForConditionalGeneration)
+#
+#   python scripts/build_vlm_sft_data.py --config configs/qwen35_lora.yaml
+#   CUDA_VISIBLE_DEVICES=0 python scripts/train_qwen_vl_lora.py --config configs/qwen35_lora.yaml
+#   CUDA_VISIBLE_DEVICES=0 python scripts/eval_qwen_vl_lora.py --config configs/qwen35_lora.yaml --max-images 60
+
+data_root: datasets/mvtec_anomaly_detection
+categories: [screw, cable, pill, capsule, zipper]
+seed: 42
+results_dir: outputs/qwen35_lora
+
+holdout_ratio: 0.4
+max_ok_per_category: 40
+
+model:
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  # qwen3_vl | qwen3_5 — selects ConditionalGeneration class in train/eval scripts
+  model_family: qwen3_5
+  dtype: bfloat16
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  # inspected on Qwen3.5-0.8B: MLP + full-attn + linear-attn out_proj
+  target_modules: [q_proj, k_proj, v_proj, o_proj, out_proj, gate_proj, up_proj, down_proj]
+  freeze_vision: true
+
+train:
+  num_epochs: 1
+  learning_rate: 1.0e-4
+  batch_size: 1
+  grad_accum: 8
+  max_new_tokens: 128
+  max_image_size: 512
+  logging_steps: 10
+  save_steps: 200
+  warmup_ratio: 0.03
+  device: cuda:0
+  gradient_checkpointing: true
+
+prompt: |
+  You are an industrial visual quality inspector.
+  Look at the product image and decide if it is defective.
+  Reply with ONLY one JSON object (no markdown), fields:
+  {
+    "decision": "OK" or "NG",
+    "confidence": float between 0 and 1,
+    "defect_type": string or "none",
+    "reason": short English reason
+  }
+  Rules:
+  - OK = normal / no defect; NG = any defect, damage, contamination, missing part.
+  - confidence reflects how sure you are.

@@ -1,7 +1,8 @@
 # CloudEdge-abnormal
 
 
-**主路径**：**多边缘节点**（默认 3，可配）各自跑 Qwen3.5-0.8B 视觉塔多层 patch gallery → **RouteAgent（默认 GGUF Q4）** 决定是否上云 → 共享云端 Qwen3-VL(+LoRA) JSON 复核。  
+**主路径**：**多边缘节点**（默认 3，可配）各自跑 Qwen3.5-0.8B 视觉塔 AD → **RouteAgent LLM（GGUF Q4）** 在边界样本上决定是否上云并给出路由解释（精简 CONTEXT + CRR 参谋）→ 共享云端 Qwen3-VL(+LoRA) 复核。  
+检测标签始终由 **边缘 AD / 云端 VLM** 给出；LLM 不做 OK/NG 覆盖。默认**每张都由 RouteAgent LLM 决定是否上云**（CRR 仅作 CONTEXT 参谋）；若设 `cascade_skip_low_uncertainty: true` 可对低不确定样本跳过 LLM。  
 **辅路径**：CLIP / DINOv3 gallery、Anomalib PaDiM（可选 OpenVINO 导出）与像素级对比。
 
 技术栈：Anomalib + OpenVINO/ONNX + llama-cpp-python（RouteAgent Q4）+（可选）KubeEdge/Sedna + MLflow + FastAPI Web。

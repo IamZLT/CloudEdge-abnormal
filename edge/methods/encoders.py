@@ -330,10 +330,19 @@ def load_qwen35_vision_encoder(
 
     if hasattr(processor, "image_processor"):
         ip = processor.image_processor
+        # Keep AD near ~224^2. Newer Qwen2VLImageProcessor uses size.{shortest,longest}_edge
+        # as min/max pixel *area* (not max_pixels attrs).
+        min_pixels = min(3136, int(max_pixels))
         if hasattr(ip, "max_pixels"):
-            ip.max_pixels = max_pixels
+            ip.max_pixels = int(max_pixels)
         if hasattr(ip, "min_pixels"):
-            ip.min_pixels = min(65536, max_pixels)
+            ip.min_pixels = min_pixels
+        if hasattr(ip, "size"):
+            try:
+                ip.size = {"shortest_edge": min_pixels, "longest_edge": int(max_pixels)}
+            except Exception:
+                pass
+            loader_note += f" | resize_pixels=[{min_pixels},{int(max_pixels)}]"
 
     n_blocks = len(visual.blocks)
     layer_ids = list(layers or DEFAULT_QWEN_LAYERS)

@@ -2,8 +2,8 @@
 """Compare collab route policies: baseline vs cost_risk (CRR).
 
 Uses cached hybrid edge scores (+ optional cloud JSON). Does NOT load VLMs.
-Sweeps network profiles and reports upload rate, upload success, fallback,
-latency, and detection F1 under each policy.
+Sweeps geo network scenarios (city/access) and reports upload rate, success,
+fallback, latency, and detection F1 under each policy.
 
 Example:
   conda activate clip
@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.collab_routing import CloudState, RouteSignal, build_router  # noqa: E402
-from src.network_sim import NetworkSimulator  # noqa: E402
+from src.network_geo import live_network_dict, make_geo_simulator  # noqa: E402
 
 OUT_DIR = ROOT / "outputs" / "reports" / "collab_routing_compare"
 HYBRID = ROOT / "outputs" / "hybrid_lora_8b"
@@ -74,10 +74,6 @@ def _load_category(cat: str) -> dict[str, Any] | None:
     }
 
 
-def _net_cfg(profile: str, seed: int) -> dict[str, Any]:
-    return {"profile": profile, "seed": int(seed)}
-
-
 def _signal_from_item(
     *,
     cat: str,
@@ -96,7 +92,7 @@ def _signal_from_item(
         edge_score=score,
         edge_thr=thr,
         edge_decision=pred,
-        network_profile=str(snap.get("profile") or "fair"),
+        network_profile=str(snap.get("profile") or "geo"),
         network=dict(snap),
         hard_margin=hard_margin,
         edge_node_id=edge_node_id,
@@ -134,19 +130,16 @@ def _run_policy(
     lat_success_ms: list[float] = []
     lat_e2e_ms: list[float] = []  # all samples: edge path ~0 account + optional upload
 
-    # one sim per category stream (reset seed for fair A/B)
+    # one geo sim per category stream (scenario = city/access, live RTT/BW/loss)
     t0 = time.perf_counter()
     for pi, pack in enumerate(packs):
-        sim = NetworkSimulator.from_config(_net_cfg(profile, seed + 17 * pi))
+        sim = make_geo_simulator(collab, profile, seed=seed + 17 * pi, edge_id=f"edge-{profile}-{pi}")
         cloud = CloudState(inflight=0, queue=0, max_inflight=max_inflight)
         thr = float(pack["threshold"])
         cat = pack["category"]
         for item in pack["items"]:
             n += 1
-            # Link view for CRR (legacy profiles are static means + loss)
-            net = dict(sim.profile.to_dict())
-            net["profile"] = sim.profile.name
-            net["outage"] = sim.profile.name == "outage"
+            net = live_network_dict(sim)
 
             sig = _signal_from_item(
                 cat=cat,
@@ -155,7 +148,7 @@ def _run_policy(
                 n_gallery=n_gallery,
                 hard_margin=hard_margin,
                 snap=net,
-                edge_node_id=f"edge-{pi % 3}",
+                edge_node_id=f"edge-{profile}-{pi % 3}",
             )
             # approximate concurrent cloud load from outstanding wants
             outstanding = max(0, n_want - n_upload_ok - n_fallback)

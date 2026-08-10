@@ -37,8 +37,26 @@ class VLMResult:
         }
 
 
+def resolve_vlm_model_class(model_path: str, model_family: str | None = None):
+    """Return (ModelClass, family) for Qwen3-VL or Qwen3.5."""
+    fam = str(model_family or "").strip().lower()
+    path = str(model_path or "").lower()
+    if not fam:
+        if "qwen3.5" in path or "qwen3_5" in path or "qwen35" in path:
+            fam = "qwen3_5"
+        else:
+            fam = "qwen3_vl"
+    if fam in {"qwen3_5", "qwen35", "qwen3.5"}:
+        from transformers import Qwen3_5ForConditionalGeneration
+
+        return Qwen3_5ForConditionalGeneration, "qwen3_5"
+    from transformers import Qwen3VLForConditionalGeneration
+
+    return Qwen3VLForConditionalGeneration, "qwen3_vl"
+
+
 class QwenVLClient:
-    """Thin wrapper around local Qwen3-VL Instruct checkpoints (+ optional LoRA adapter)."""
+    """Thin wrapper around local Qwen3-VL / Qwen3.5 checkpoints (+ optional LoRA adapter)."""
 
     def __init__(
         self,
@@ -49,8 +67,9 @@ class QwenVLClient:
         role: str = "edge",
         prompt: str | None = None,
         adapter_path: str | None = None,
+        model_family: str | None = None,
     ):
-        from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+        from transformers import AutoProcessor
 
         self.model_path = str(model_path)
         self.adapter_path = str(adapter_path) if adapter_path else None
@@ -74,6 +93,9 @@ class QwenVLClient:
             "auto": "auto",
         }.get(str(dtype).lower(), torch.bfloat16)
 
+        ModelCls, fam = resolve_vlm_model_class(self.model_path, model_family)
+        self.model_family = fam
+
         self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
         # device="auto" / "cuda:0,1" → shard across visible GPUs (useful when single card <16GB free)
         if str(device).lower() == "auto" or ("," in str(device) and "cuda" in str(device)):
@@ -86,7 +108,7 @@ class QwenVLClient:
             device_map = None
             to_device = device
 
-        self.model = Qwen3VLForConditionalGeneration.from_pretrained(
+        self.model = ModelCls.from_pretrained(
             self.model_path,
             dtype=torch_dtype,
             device_map=device_map,
