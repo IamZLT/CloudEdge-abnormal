@@ -64,19 +64,28 @@ class PatchGalleryAD:
 
     @torch.inference_mode()
     def build_gallery(self, paths: list[Path], seed: int = 42) -> float:
-        per_layer: list[list[torch.Tensor]] | None = None
         t0 = time.perf_counter()
-        for p in paths:
-            img = Image.open(p).convert("RGB")
-            pt = self.encode_patches(img)
-            if per_layer is None:
-                per_layer = [[] for _ in pt.layer_tokens]
-                self.layer_ids = list(pt.layer_ids)
+        pts = [self.encode_patches(Image.open(p).convert("RGB")) for p in paths]
+        self.build_gallery_from_tokens(pts, seed=seed)
+        return time.perf_counter() - t0
+
+    @torch.inference_mode()
+    def build_gallery_from_tokens(self, pts: list[PatchTokens], seed: int = 42) -> None:
+        """Build the gallery bank from pre-encoded patch tokens.
+
+        Enables leave-one-out scoring (e.g. test/good support set) without
+        re-encoding the same images per query.
+        """
+        if not pts:
+            self.galleries = None
+            return
+        per_layer: list[list[torch.Tensor]] = [[] for _ in pts[0].layer_tokens]
+        self.layer_ids = list(pts[0].layer_ids)
+        for pt in pts:
             for li, tok in enumerate(pt.layer_tokens):
                 # Keep banks on the inference device for fast NN at score time.
                 t = _l2_normalize(tok.float().to(self.device, non_blocking=True))
                 per_layer[li].append(t)
-        assert per_layer is not None
         galleries: list[torch.Tensor] = []
         rng = np.random.default_rng(seed)
         for feats in per_layer:
@@ -86,7 +95,6 @@ class PatchGalleryAD:
                 g = g[torch.from_numpy(idx).to(g.device)]
             galleries.append(g.contiguous())
         self.galleries = galleries
-        return time.perf_counter() - t0
 
     @torch.inference_mode()
     def score_patches(self, pt: PatchTokens) -> tuple[float, np.ndarray]:

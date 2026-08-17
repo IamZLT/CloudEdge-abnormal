@@ -1,0 +1,76 @@
+# Multiscale ROI supervised pipeline on the NEW mvtec_anomaly_llm split:
+#   edge contrast (few-shot) → FULL-image + top-k ROI collage → LoRA Qwen3.5-0.8B.
+#
+# Difference from qwen35_roi_newsplit_sft.yaml:
+#   crop_mode: multiscale → the VLM input is a montage of [full downscaled image
+#   | top-k ROI crops], so global defects (color/texture/layout) survive while
+#   local defects are still magnified. top_k=3 covers spatially spread anomalies.
+#
+# Env: conda activate clip
+#   CUDA_VISIBLE_DEVICES=3 python scripts/run_qwen35_roi_multiscale.py \
+#     --config configs/qwen35_roi_multiscale.yaml --device cuda:0
+
+train_jsonl: datasets/mvtec_anomaly_llm/train.jsonl
+test_jsonl: datasets/mvtec_anomaly_llm/test.jsonl
+zero_shot_train: datasets/mvtec_anomaly_llm/mvtec_zero_shot_train.json
+results_dir: outputs/qwen35_roi_multiscale
+seed: 42
+device: cuda:0
+
+edge:
+  method: qwen35
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  processor_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct
+  layers: [6, 8, 10, 12]
+  fusion_temp: 0.5
+  max_pixels: 50176
+  hard_margin: 0.05
+  gallery_split: test   # test | train
+
+roi:
+  crop_mode: multiscale   # multiscale | roi
+  top_k: 3
+  full_height: 224
+  pad_ratio: 0.4
+  min_side: 96
+  save_previews: false
+
+model:
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  model_family: qwen3_5
+  dtype: bfloat16
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, out_proj, gate_proj, up_proj, down_proj]
+  freeze_vision: true
+
+train:
+  num_epochs: 1
+  learning_rate: 1.0e-4
+  batch_size: 1
+  grad_accum: 8
+  max_image_size: 384
+  logging_steps: 10
+  warmup_ratio: 0.05
+  gradient_checkpointing: true
+
+eval:
+  max_images: null   # null = all test images
+
+prompt_template: |
+  You are an industrial visual quality inspector.
+  The image is a montage of a {category}: the LEFT panel is the full product (downscaled), and the RIGHT panels are magnified crops of the regions a coarse pre-screening flagged as most different from normal appearance. These flags may be false alarms (lighting, pose, harmless texture). Judge only by what you actually see: use the full view for overall color/layout and the crops for fine defects.
+  Reply with ONLY one JSON object:
+  {{
+    "decision": "OK" or "NG",
+    "confidence": float 0-1,
+    "defect_type": "none" or the defect type,
+    "reason": one short English sentence
+  }}
+  Rules:
+  - OK => the product looks normal (no real defect); defect_type must be "none".
+  - NG => there is a real defect; set defect_type to its name and explain in reason.
+  - When naming the type, you may use a known type for this product ({defect_vocab}) if it matches; otherwise use a short descriptive name.

@@ -1,0 +1,109 @@
+# Qwen3.5-0.8B FT condition matrix (NEW outputs; does not overwrite qwen35_lora)
+# Env: conda activate clip
+#
+#   CUDA_VISIBLE_DEVICES=3 python scripts/run_qwen35_ft_conditions.py \
+#     --config configs/qwen35_ft_conditions.yaml
+
+data_root: datasets/mvtec_anomaly_detection
+# reuse same split as prior LoRA trial
+source_train_jsonl: outputs/qwen35_lora/sft_train.jsonl
+source_holdout_jsonl: outputs/qwen35_lora/sft_holdout.jsonl
+results_dir: outputs/qwen35_ft_conditions
+# Full-FT weights are large (~1.6GB); store under /data1 (NOT /home).
+# Project paths outputs/.../ckpts/full_* symlink here.
+full_ckpt_root: /data1/zlt/qwen35_ft_ckpts
+seed: 42
+device: cuda:0
+
+model:
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  model_family: qwen3_5
+  dtype: bfloat16
+
+# Existing 5-cat LoRA adapter (read-only reference)
+ref_lora_5cat: outputs/qwen35_lora/adapter
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, out_proj, gate_proj, up_proj, down_proj]
+  freeze_vision: true
+
+train_lora:
+  num_epochs: 1
+  learning_rate: 1.0e-4
+  batch_size: 1
+  grad_accum: 8
+  max_image_size: 512
+  logging_steps: 10
+  save_steps: 200
+  warmup_ratio: 0.03
+  gradient_checkpointing: true
+
+# Full decoder FT: freeze vision, update all non-vision params; lower LR
+train_full:
+  num_epochs: 1
+  learning_rate: 2.0e-5
+  batch_size: 1
+  grad_accum: 8
+  max_image_size: 512
+  logging_steps: 10
+  save_steps: 200
+  warmup_ratio: 0.03
+  gradient_checkpointing: true
+  freeze_vision: true
+
+# Single-category runs use this class
+single_category: screw
+# For single-cat, train a bit longer (fewer samples)
+train_lora_1cat:
+  num_epochs: 3
+  learning_rate: 1.0e-4
+  batch_size: 1
+  grad_accum: 4
+  max_image_size: 512
+  logging_steps: 5
+  save_steps: 200
+  warmup_ratio: 0.05
+  gradient_checkpointing: true
+
+train_full_1cat:
+  num_epochs: 3
+  learning_rate: 2.0e-5
+  batch_size: 1
+  grad_accum: 4
+  max_image_size: 512
+  logging_steps: 5
+  save_steps: 200
+  warmup_ratio: 0.05
+  gradient_checkpointing: true
+  freeze_vision: true
+
+eval:
+  max_images_5cat: 60
+  # balanced subsample within the single category
+  max_images_1cat: 32
+
+prompt: |
+  You are an industrial visual quality inspector.
+  Look at the product image and decide if it is defective.
+  Reply with ONLY one JSON object (no markdown), fields:
+  {
+    "decision": "OK" or "NG",
+    "confidence": float between 0 and 1,
+    "defect_type": string or "none",
+    "reason": short English reason
+  }
+  Rules:
+  - OK = normal / no defect; NG = any defect, damage, contamination, missing part.
+  - confidence reflects how sure you are.
+
+# conditions to run (order). Use --only to subset.
+conditions:
+  - zs_5cat
+  - lora_5cat_ref
+  - full_5cat
+  - zs_screw
+  - lora_screw
+  - full_screw

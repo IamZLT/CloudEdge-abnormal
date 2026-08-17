@@ -1,0 +1,110 @@
+device:
+  id: edge-device-001
+
+edge:
+  model_path: null
+  target_size: null  # 边缘端保持原始分辨率，不缩放
+
+cloud:
+  # 边缘侧只访问云端网关；部署到其他网段时修改为云端可达地址。
+  gateway_url: http://172.27.127.157:7790
+  gateway_host: 0.0.0.0
+  gateway_port: 7790
+  gateway_max_upload_bytes: 104857600
+
+  # 仅由云端网关读取，边缘侧不直接访问大模型 API。
+  model_api_base_url: http://127.0.0.1:7788/v1
+  model: qwen25vl
+  api_key: null
+  # 边缘连接云端网关的 TCP 建连超时；不影响网关内部大模型推理超时。
+  connect_timeout: 0.5
+  # 边缘等待网关响应的上限，与网关内部模型超时分开配置。
+  gateway_read_timeout: 10
+  # 仅用于网关到本机大模型 API。
+  model_timeout: 60
+  max_tokens: 512
+  temperature: 0.1
+  # API 与本程序同机时可采集真实 GPU 指标；分离部署时设为 null。
+  gpu_index: 1
+  gpu_sample_interval: 0.25
+
+resilience:
+  # 第一次网络失败即熔断；熔断期间直接使用边缘结果，不再逐任务等待超时。
+  circuit_breaker_enabled: true
+  failure_threshold: 1
+  # 冷却后仅允许一个半开请求探测恢复。
+  recovery_timeout_seconds: 2
+  # 断网时高复杂度或多节点冲突样本保守转入异常复检，避免不确定样本被放行。
+  fail_safe_uncertain_as_anomaly: true
+
+policy:
+  # 默认使用 SAEC 风格图像质量/复杂度分数路由；高复杂度样本上传云端复核。
+  quality_score_threshold: 0.5
+  # 若设为 0~1，会在每次运行开始时按当前输入数据集分位数自动校准阈值。
+  # 例如 0.3 表示约 30% 高复杂度图像上云；null 表示使用上面的固定阈值。
+  quality_cloud_ratio: 0.3
+  # 全量数据集较大时，只均匀抽样部分图像用于阈值校准，避免 main.py 启动阶段长时间无输出。
+  quality_calibration_max_images: 1000
+  quality_calibration_workers: 8
+  quality_score_size: 192
+  quality_jpeg_quality: 30
+  quality_weights:
+    entropy: 0.30
+    edge_density: 0.25
+    laplacian: 0.20
+    sobel: 0.15
+    jpeg_residual: 0.10
+
+task:
+  max_history: 100
+
+datasets:
+  - name: MVTec
+    type: mvtec
+    root: /data2/dxj/Dataset/MVTec
+    split: test
+    categories: []       # 空列表表示全部类别
+    max_images: null     # null 表示不限制数量
+
+  - name: VisA
+    type: visa
+    root: /data2/dxj/Dataset/VisA
+    categories: []       # 空列表表示全部类别
+    subsets: [Normal, Anomaly]
+    max_images: null
+
+app:
+  image_extensions: [.png, .jpg, .jpeg]
+  output_path: outputs/results.jsonl
+  output_append: false  # false：每次运行覆盖；true：追加到已有文件
+  visualization_output_dir: outputs/visualizations
+
+evaluation:
+  enabled: true
+  run_label: full_dataset
+  sample_description: 按 datasets 配置处理两个数据集的全部图像
+  # 用于计算平均带宽占用率；请按实际边缘到云端链路容量修改。
+  link_capacity_mbps: 1000
+  summary_output_path: outputs/metrics/summary.json
+  detail_output_path: outputs/metrics/events.jsonl
+  report_output_path: outputs/metrics/report.md
+
+  network_outage:
+    # main.py 正式运行时保持 false；evaluate.py --simulate-outage 会临时启用。
+    enabled: false
+    business_retention_target_percent: 90
+    # 限时业务保持率沿用项目端到端实时目标。
+    business_deadline_ms: 200
+
+  multi_edge:
+    enabled: true
+    conflict_resolution: cloud
+    nodes:
+      - id: edge-node-001
+        augmentation: none
+      - id: edge-node-002
+        augmentation: contrast
+        parameter: 0.95
+      - id: edge-node-003
+        augmentation: brightness
+        parameter: 1.05

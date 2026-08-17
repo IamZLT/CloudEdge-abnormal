@@ -1,0 +1,41 @@
+# Full-image + "Yes/No + reason" LoRA SFT, trained on REAL GPT reason annotations
+# extracted from datasets/mvtec_anomaly_llm/mvtec_zero_shot_{train,test}.json.
+#
+# Unlike the templated Yes/No corpus, the response here is the GPT "Yes/No + reason"
+# sentence (e.g. "Yes, there is an anomaly. A small indentation ...").
+#
+# Env: conda activate clip
+#   CUDA_VISIBLE_DEVICES=4 python scripts/run_qwen35_reason_sft.py \
+#     --config configs/qwen35_reason_sft.yaml --device cuda:0
+
+zero_shot_train: datasets/mvtec_anomaly_llm/mvtec_zero_shot_train.json
+zero_shot_test: datasets/mvtec_anomaly_llm/mvtec_zero_shot_test.json
+results_dir: outputs/qwen35_reason_sft
+seed: 42
+device: cuda:0
+
+model:
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  model_family: qwen3_5
+  dtype: bfloat16
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, out_proj, gate_proj, up_proj, down_proj]
+  freeze_vision: true
+
+train:
+  num_epochs: 1
+  learning_rate: 1.0e-4
+  batch_size: 1
+  grad_accum: 8
+  max_image_size: 384
+  logging_steps: 10
+  warmup_ratio: 0.05
+  gradient_checkpointing: true
+
+prompt: |
+  Is there any anomaly or defect in the product shown in the image?
+  Answer with Yes or No, and briefly explain the reason.

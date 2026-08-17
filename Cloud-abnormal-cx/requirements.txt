@@ -1,0 +1,16 @@
+torch>=2.4
+torchvision>=0.19
+transformers>=5.9
+accelerate>=1.0
+Pillow>=10.0
+numpy>=1.26
+scipy>=1.11
+scikit-learn>=1.4
+PyYAML>=6.0
+tqdm>=4.66
+safetensors>=0.4
+
+# Qwen3.5 线性注意力加速（可选，缺失时自动回退到较慢的 PyTorch 实现）
+# causal_conv1d
+# fla
+

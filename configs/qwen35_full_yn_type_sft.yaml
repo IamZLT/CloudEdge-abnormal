@@ -1,0 +1,49 @@
+# Full-image + simple "Yes/No + defect type" prompt → LoRA Qwen3.5-0.8B.
+#
+# Fuses the two best findings:
+#   1. OK/NG decision is best with a SIMPLE prompt (not complex JSON).
+#   2. defect_type naming needs global context (full image) + fine-tuning.
+#
+# Prompt keeps the Yes/No simplicity: the FIRST word decides OK/NG, the
+# remaining words name the defect type. Training target:
+#   OK -> "No"
+#   NG -> "Yes, {defect_type}"  (real MVTec defect type)
+#
+# Env: conda activate clip
+#   CUDA_VISIBLE_DEVICES=3 python scripts/run_qwen35_full_yn_type_sft.py \
+#     --config configs/qwen35_full_yn_type_sft.yaml --device cuda:0
+
+train_jsonl: datasets/mvtec_anomaly_llm/train.jsonl
+test_jsonl: datasets/mvtec_anomaly_llm/test.jsonl
+results_dir: outputs/qwen35_full_yn_type_sft
+seed: 42
+device: cuda:0
+
+model:
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  model_family: qwen3_5
+  dtype: bfloat16
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, out_proj, gate_proj, up_proj, down_proj]
+  freeze_vision: true
+
+train:
+  num_epochs: 1
+  learning_rate: 1.0e-4
+  batch_size: 1
+  grad_accum: 8
+  max_image_size: 384
+  logging_steps: 10
+  warmup_ratio: 0.05
+  gradient_checkpointing: true
+
+eval:
+  max_images: null   # null = all test images
+
+prompt: |
+  Is there any anomaly or defect in the product shown in the image?
+  Answer with "Yes" or "No". If Yes, name the defect type in a few words.

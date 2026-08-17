@@ -1,0 +1,68 @@
+# ROI-conditioned VLM holdout bench (NEW; does not alter qwen35_lora / edge_qwen35)
+# Env: conda activate clip
+#
+#   CUDA_VISIBLE_DEVICES=3 python scripts/bench_roi_vlm_holdout.py \
+#     --config configs/qwen35_roi_vlm.yaml --max-images 60
+
+data_root: datasets/mvtec_anomaly_detection
+holdout_jsonl: outputs/qwen35_lora/sft_holdout.jsonl
+results_dir: outputs/qwen35_roi_vlm
+seed: 42
+device: cuda:0
+
+edge:
+  method: qwen35
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  processor_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct
+  layers: [6, 8, 10, 12]
+  fusion_temp: 0.5
+  max_gallery: 16
+  max_pixels: 50176
+
+roi:
+  top_k: 2
+  pad_ratio: 0.35
+  min_side: 96
+  # modes evaluated after AD maps are cached:
+  #   full      — whole image (baseline)
+  #   roi_top1  — single highest-score crop
+  #   roi_collage — horizontal collage of top_k crops
+  modes: [full, roi_top1, roi_collage]
+  save_previews: true
+
+vlm:
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  model_family: qwen3_5
+  dtype: bfloat16
+  # null = zero-shot only; set to outputs/qwen35_lora/adapter to also eval LoRA
+  adapter_path: null
+  max_new_tokens: 128
+
+prompt_full: |
+  You are an industrial visual quality inspector.
+  Look at the product image and decide if it is defective.
+  Reply with ONLY one JSON object (no markdown), fields:
+  {
+    "decision": "OK" or "NG",
+    "confidence": float between 0 and 1,
+    "defect_type": string or "none",
+    "reason": short English reason
+  }
+  Rules:
+  - OK = normal / no defect; NG = any defect, damage, contamination, missing part.
+  - confidence reflects how sure you are.
+
+prompt_roi: |
+  You are an industrial visual quality inspector.
+  The image shows suspected anomalous region(s) cropped from a product photo
+  (selected by a vision contrast detector). Decide if the product is defective.
+  Reply with ONLY one JSON object (no markdown), fields:
+  {
+    "decision": "OK" or "NG",
+    "confidence": float between 0 and 1,
+    "defect_type": string or "none",
+    "reason": short English reason
+  }
+  Rules:
+  - OK = region looks normal / no clear defect; NG = visible defect in the crop(s).
+  - If crops look ambiguous, lower confidence but still choose OK or NG.

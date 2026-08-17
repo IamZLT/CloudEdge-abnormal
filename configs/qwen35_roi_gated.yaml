@@ -1,0 +1,63 @@
+# Edge-gated + ROI short-label SFT for Qwen3.5-0.8B (NEW; does not overwrite prior runs)
+# Env: conda activate clip
+#
+#   CUDA_VISIBLE_DEVICES=3 python scripts/run_qwen35_roi_gated.py \
+#     --config configs/qwen35_roi_gated.yaml
+
+data_root: datasets/mvtec_anomaly_detection
+source_train_jsonl: outputs/qwen35_lora/sft_train.jsonl
+source_holdout_jsonl: outputs/qwen35_lora/sft_holdout.jsonl
+results_dir: outputs/qwen35_roi_gated
+seed: 42
+device: cuda:0
+
+edge:
+  method: qwen35
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  layers: [6, 8, 10, 12]
+  fusion_temp: 0.5
+  max_gallery: 16
+  max_pixels: 50176
+  thr_quantile: 0.95
+  # band around thr → ask ROI-VLM; outside → trust edge
+  hard_margin: 0.04
+
+roi:
+  top_k: 1
+  pad_ratio: 0.4
+  min_side: 96
+  # for OK images also crop a low-score patch as easy OK
+  add_ok_low_crop: true
+
+model:
+  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  model_family: qwen3_5
+  dtype: bfloat16
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, out_proj, gate_proj, up_proj, down_proj]
+  freeze_vision: true
+
+train:
+  num_epochs: 3
+  learning_rate: 1.0e-4
+  batch_size: 1
+  grad_accum: 8
+  max_image_size: 384
+  logging_steps: 10
+  save_steps: 9999
+  warmup_ratio: 0.05
+  gradient_checkpointing: true
+  device: cuda:0
+
+eval:
+  max_images: 60
+
+prompt_roi: |
+  Look at this cropped product region (selected by a contrast anomaly detector).
+  Decide if this region shows a defect.
+  Reply with ONLY one short JSON object:
+  {"decision":"OK" or "NG","confidence":0-1,"defect_type":"none"|short,"reason":"few words"}
