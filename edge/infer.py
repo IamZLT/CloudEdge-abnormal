@@ -171,6 +171,55 @@ def _infer_patch_gallery(
     return out
 
 
+def _crr_route(
+    collab: dict,
+    *,
+    category: str,
+    n_gallery: int,
+    edge_score: float,
+    edge_thr: float,
+    edge_decision: str,
+    hard_margin: float,
+    heuristic_hard: bool,
+) -> dict:
+    """Hand-written CRR upload decision (production controller, no LLM)."""
+    from src.collab_routing import RouteSignal, build_router
+    from src.vlm.route_agent import resolve_network_profile
+
+    try:
+        profile, net = resolve_network_profile(collab)
+        router = build_router("cost_risk", {**collab, "route_policy": "cost_risk"})
+        sig = RouteSignal(
+            category=category,
+            n_gallery=int(n_gallery),
+            edge_score=float(edge_score),
+            edge_thr=float(edge_thr),
+            edge_decision=str(edge_decision),
+            network_profile=str(profile),
+            network=net,
+            hard_margin=float(hard_margin),
+        )
+        verd = router.decide(sig)
+        return {
+            "upload": bool(verd.upload),
+            "confidence": 1.0,
+            "reason": verd.reason,
+            "source": "crr",
+            "algorithm": verd.algorithm,
+            "features": verd.features,
+            "network_profile": str(profile),
+            "heuristic_hard": bool(heuristic_hard),
+        }
+    except Exception as e:  # noqa: BLE001 — CLI must never crash on routing
+        return {
+            "upload": bool(heuristic_hard),
+            "confidence": 0.0,
+            "reason": f"crr_error: {e}",
+            "source": "crr_error_fallback",
+            "heuristic_hard": bool(heuristic_hard),
+        }
+
+
 def _maybe_route_agent(
     cfg: dict,
     *,
@@ -182,14 +231,23 @@ def _maybe_route_agent(
     edge_decision: str,
     hard_margin: float,
     heuristic_hard: bool,
-) -> dict | None:
-    """Optionally call Qwen3.5 RouteAgent; return route dict or None if disabled."""
+) -> dict:
+    """Upload routing. CRR (hand-written) is the production controller; the
+    Qwen3.5 RouteAgent is an opt-in experimental baseline only."""
     collab = cfg.get("collab") or {}
     ra_cfg = dict(collab.get("route_agent") or {})
-    if cfg.get("_disable_route_agent"):
-        return None
-    if not ra_cfg.get("enabled", False):
-        return None
+    if cfg.get("_disable_route_agent") or not ra_cfg.get("enabled", False):
+        # Production path: hand-written CRR is the only upload controller.
+        return _crr_route(
+            collab,
+            category=category,
+            n_gallery=n_gallery,
+            edge_score=edge_score,
+            edge_thr=edge_thr,
+            edge_decision=edge_decision,
+            hard_margin=hard_margin,
+            heuristic_hard=heuristic_hard,
+        )
     try:
         from src.vlm.route_agent import RouteAgent, RouteContext, resolve_network_profile
 

@@ -1,7 +1,0 @@
-{
-  "anomaly_probability": 0.0,
-  "defect_type": "unknown",
-  "regions": [],
-  "reason": "Qwen response required tolerant parsing",
-  "parse_fallback": true
-}

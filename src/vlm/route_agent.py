@@ -1,4 +1,4 @@
-"""Qwen3.5 edge RouteAgent — decide upload + short detection analysis.
+"""Qwen3.5 edge RouteAgent — experimental LLM upload router (opt-in baseline).
 
 Backends:
   - hf   : transformers Qwen3_5ForConditionalGeneration (bf16/fp16)
@@ -8,12 +8,12 @@ vision_mode:
   - text|auto (default): reuse edge-AD CONTEXT; skip 2nd vision encode
   - full: attach product image again (mmproj / HF vision)
 
-Default policy: LLM decides upload from banded fields (category, n_gallery,
-edge_decision, uncertainty, link_tier, cloud_pressure). No post-LLM routing rule
-overwrites a valid answer. CRR may run for logging but is not in CONTEXT.
-
-Optional legacy: enforce_context_rules=true snaps upload to CRR/baseline rules;
-hard_block_on_outage=true short-circuits before the LLM call.
+PRODUCTION POLICY: the hand-written CRR (``src.collab_routing.cost_risk``) is the
+sole upload controller; the LLM is used ONLY for detection, never for routing.
+This RouteAgent is retained purely as an experimental A/B baseline. It is opt-in
+via ``collab.route_agent.enabled: true`` (default ``false`` in configs/default.yaml).
+When enabled, the LLM decides upload from banded fields; CRR may run for logging
+but is not the controller in that legacy mode.
 """
 from __future__ import annotations
 

@@ -2,6 +2,7 @@
 datasets
 datasets/
 outputs/
+outputs_224/
 results/
 model_card/
 *.ckpt

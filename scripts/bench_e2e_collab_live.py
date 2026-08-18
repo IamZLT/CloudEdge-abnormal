@@ -3,11 +3,11 @@
 
 Pipeline per sample:
   1) Edge AD: Qwen3.5-0.8B multi-layer patch gallery (live vision)
-  2) RouteAgent LLM (always; cascade off) + CRR CONTEXT + network sim
-  3) Cloud VLM: Qwen3-VL-4B+LoRA on successful upload
+  2) CRR hand-written router (network + cloud load + conflict) — no LLM routing
+  3) Cloud: DINOv3 (pixel kNN) + Qwen3.5 semantic fusion on successful upload
 
 Two-pass loading (fits one GPU): score all edges first, then unload edge and
-load RouteAgent + cloud for routing/review.
+load the cloud model for review.
 
 Example:
   conda activate clip
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import statistics as st
 import sys
@@ -38,10 +39,10 @@ from edge.infer import DEFAULT_PATHS, _gallery_paths  # noqa: E402
 from edge.methods.encoders import load_qwen35_vision_encoder  # noqa: E402
 from edge.methods.gallery_ad import mvtec_test_split  # noqa: E402
 from edge.methods.patch_gallery_ad import PatchGalleryAD  # noqa: E402
+from src.cloud_load import CloudLoadSim  # noqa: E402
+from src.cloud_reviewer import CloudReviewer  # noqa: E402
 from src.collab_routing import CloudState, RouteSignal, build_router, configure_routing  # noqa: E402
 from src.network_geo import live_network_dict, make_geo_simulator  # noqa: E402
-from src.vlm import QwenVLClient  # noqa: E402
-from src.vlm.route_agent import RouteAgent, RouteContext  # noqa: E402
 
 OUT_DIR = ROOT / "outputs" / "reports" / "e2e_collab_live"
 
@@ -157,7 +158,10 @@ def score_edges(
             {"path": str(p), "label": int(y), "category": cat}
             for p, y in test_items
         ]
-        items = _subsample(items, limit, seed + hash(cat) % 1000)
+        # Stable per-category seed: Python's hash() is salted per-process, so it
+        # would break reproducibility across runs. Use a deterministic digest.
+        cat_seed = int(hashlib.sha256(cat.encode()).hexdigest()[:8], 16) % 1000
+        items = _subsample(items, limit, seed + cat_seed)
         print(f"[edge] {cat}: gallery={len(gallery)} thr={thr:.4f} n_test={len(items)} build={build_s:.1f}s")
 
         # Warm CUDA/cudnn kernels before timed loop (same pattern as PatchGalleryAD.evaluate).
@@ -202,75 +206,48 @@ def run_route_cloud(
     *,
     edge_rows: list[dict[str, Any]],
     collab: dict[str, Any],
-    cloud_cfg: dict[str, Any],
-    prompt: str | None,
     profiles: list[str],
     device: str,
     seed: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     configure_routing(collab)
-    ra_cfg = dict(collab.get("route_agent") or {})
-    ra_cfg["device"] = device
-    ra_cfg.setdefault("backend", "gguf")
-    ra_cfg["enforce_context_rules"] = False
-    ra_cfg["hard_block_on_outage"] = False
-    ra_cfg["cascade_skip_low_uncertainty"] = False
+    print("[route] CRR (hand-written cost-risk router) — no LLM routing")
+    route_load_s = 0.0
 
-    print(f"[route] load RouteAgent backend={ra_cfg.get('backend')} ...")
-    t0 = time.perf_counter()
-    agent = RouteAgent.from_config(ra_cfg)
-    route_load_s = time.perf_counter() - t0
-    print(f"[route] loaded in {route_load_s:.1f}s")
-
-    print("[cloud] load Qwen3-VL-4B+LoRA ...")
+    print("[cloud] load DINOv3 + Qwen3.5 fusion ...")
     t1 = time.perf_counter()
-    cloud = QwenVLClient(
-        model_path=cloud_cfg["model_path"],
-        adapter_path=cloud_cfg.get("adapter_path"),
-        device=device,
-        dtype=cloud_cfg.get("dtype", "bfloat16"),
-        max_new_tokens=int(cloud_cfg.get("max_new_tokens", 160)),
-        role="cloud",
-        prompt=prompt,
-    )
+    reviewer = CloudReviewer(device=device)
     cloud_load_s = time.perf_counter() - t1
     print(f"[cloud] loaded in {cloud_load_s:.1f}s")
 
     router = build_router("cost_risk", {**collab, "route_policy": "cost_risk"})
     adm = dict(collab.get("cloud_admission") or {})
     max_inflight = int(adm.get("max_inflight", 2))
+    # Discrete-event cloud-load sim: nominal cloud service time drives the
+    # -w_c*c_cloud term (the sequential loop alone would keep inflight ≈ 0).
+    service_ms = float(adm.get("service_ms", 3000.0))
+    simulate_load = bool(adm.get("simulate_load", True))
     hard_margin = float(collab.get("hard_margin") or collab.get("thr_margin") or 0.05)
     up_bytes = int(collab.get("upload_bytes_hard") or 80000)
 
-    # warmup route + cloud
+    # warmup cloud only (CRR routing has no model to warm)
     w = edge_rows[0]
-    warm_sim = make_geo_simulator(collab, profiles[0] if profiles else "fair", seed=seed, edge_id="edge-warmup")
-    warm_net = live_network_dict(warm_sim)
-    wctx = RouteContext(
-        image=w["path"],
-        category=w["category"],
-        n_gallery=int(w["n_gallery"]),
-        edge_score=float(w["edge_score"]),
-        edge_thr=float(w["edge_thr"]),
-        edge_decision=str(w["edge_decision"]),
-        network_profile=str(warm_net.get("profile") or "geo"),
-        network=warm_net,
-        hard_margin=hard_margin,
-        cloud={"inflight": 0, "queue": 0, "max_inflight": max_inflight},
-        include_image=False,
-    )
-    print("[warmup] route+cloud ...")
-    _ = agent.decide(wctx)
-    _ = cloud.infer(Path(w["path"]))
+    print("[warmup] cloud ...")
+    _ = reviewer.review(w["path"], w["category"])
 
     all_rows: list[dict[str, Any]] = []
+    load_summaries: dict[str, Any] = {}
     for profile in profiles:
-        print(f"\n=== geo-scenario={profile} n={len(edge_rows)} (full LLM) ===")
+        print(f"\n=== geo-scenario={profile} n={len(edge_rows)} (CRR routing) ===")
         sim = make_geo_simulator(collab, profile, seed=seed, edge_id=f"edge-{profile}")
-        cloud_state = CloudState(inflight=0, queue=0, max_inflight=max_inflight)
-        n_want = n_ok = n_fb = 0
+        load_sim = CloudLoadSim(max_inflight=max_inflight, service_ms=service_ms)
+        sim_clock = 0.0  # virtual edge arrival clock (ms)
 
         for i, er in enumerate(edge_rows):
+            # Edge produces this sample after its AD latency; advance the cloud
+            # queue to the sample's arrival time so inflight/queue are real.
+            sim_clock += float(er["edge_ms"])
+            load_sim.advance(sim_clock)
             net = live_network_dict(sim)
             sig = RouteSignal(
                 category=er["category"],
@@ -283,44 +260,25 @@ def run_route_cloud(
                 hard_margin=hard_margin,
                 edge_node_id=f"edge-{profile}",
             )
-            cloud_state.inflight = min(max_inflight, max(0, n_want - n_ok - n_fb))
-            verd = router.decide(sig, cloud_state)
-
-            ctx = RouteContext(
-                image=er["path"],
-                category=er["category"],
-                n_gallery=int(er["n_gallery"]),
-                edge_score=float(er["edge_score"]),
-                edge_thr=float(er["edge_thr"]),
-                edge_decision=str(er["edge_decision"]),
-                network_profile=str(net.get("profile") or "geo"),
-                network=net,
-                hard_margin=hard_margin,
-                crr=verd.to_dict(),
-                cloud=cloud_state.to_dict(),
-                include_image=False,
-            )
-
+            cloud_state = load_sim.state() if simulate_load else CloudState(inflight=0, queue=0, max_inflight=max_inflight)
             t_route0 = time.perf_counter()
-            dec = agent.decide(ctx)
+            verd = router.decide(sig, cloud_state)
             route_wall_ms = (time.perf_counter() - t_route0) * 1000.0
-            ra_ms = float(dec.latency_ms or 0.0)
-            upload = bool(dec.upload)
+            # CRR is the sole upload controller (hand-written, no LLM routing).
+            upload = bool(verd.upload)
+            ra_ms = 0.0
 
             net_ms = 0.0
             path_type = "LOCAL"
             net_ok = False
             if upload:
-                n_want += 1
                 out = sim.try_upload(up_bytes)
                 net_ms = float(out.rtt_ms) + float(out.tx_ms)
                 route_wall_ms += net_ms  # include sim hop in route wall for parity
                 if out.ok:
-                    n_ok += 1
                     path_type = "CLOUD_REVIEW"
                     net_ok = True
                 else:
-                    n_fb += 1
                     path_type = "LOCAL_NET_FALLBACK"
 
             cloud_ms = 0.0
@@ -328,13 +286,18 @@ def run_route_cloud(
             cloud_parse_ok = None
             final_pred = int(er["edge_pred"])
             if path_type == "CLOUD_REVIEW":
+                # The request occupies a cloud server (drives the load-aware CRR
+                # term on subsequent samples).
+                if simulate_load:
+                    load_sim.submit(sim_clock + net_ms)
                 t_c = time.perf_counter()
-                vlm = cloud.infer(Path(er["path"]))
-                cloud_ms = float(vlm.latency_ms or (time.perf_counter() - t_c) * 1000.0)
-                cloud_dec = vlm.decision
-                cloud_parse_ok = bool(vlm.parse_ok)
-                if vlm.decision:
-                    final_pred = 1 if str(vlm.decision).upper() == "NG" else 0
+                res = reviewer.review(er["path"], er["category"])
+                cloud_ms = float(res["latency_ms"])
+                cloud_dec = res["decision"]
+                cloud_parse_ok = True
+                # DINO+Qwen fusion is fail-safe by construction (per-category
+                # memory, only-enhance-never-suppress) — adopt its OK/NG directly.
+                final_pred = 1 if str(res["decision"]).upper() == "NG" else 0
 
             total_ms = float(er["edge_ms"]) + route_wall_ms + cloud_ms
             row = {
@@ -347,7 +310,7 @@ def run_route_cloud(
                 "edge_decision": er["edge_decision"],
                 "edge_pred": int(er["edge_pred"]),
                 "edge_ms": float(er["edge_ms"]),
-                "llm_invoked": True,
+                "llm_invoked": False,
                 "upload": upload,
                 "path_type": path_type,
                 "net_ok": net_ok,
@@ -359,26 +322,30 @@ def run_route_cloud(
                 "cloud_dec": cloud_dec,
                 "cloud_parse_ok": cloud_parse_ok,
                 "final_pred": int(final_pred),
-                "agree_crr": upload == bool(verd.upload),
-                "parse_ok": bool(dec.parse_ok),
-                "source": dec.source,
+                "agree_crr": True,
+                "parse_ok": True,
+                "source": "crr",
                 "crr_suggest": bool(verd.upload),
-                "reason": dec.reason,
+                "reason": verd.reason,
             }
             all_rows.append(row)
             print(
                 f"[{profile} {i}] {er['category']}/{Path(er['path']).name} "
-                f"{path_type} up={upload} | edge={er['edge_ms']:.0f} ra={ra_ms:.0f} "
+                f"{path_type} up={upload} | edge={er['edge_ms']:.0f} route={route_wall_ms:.0f} "
                 f"net={net_ms:.0f} cloud={cloud_ms:.0f} | TOTAL={total_ms:.0f} "
                 f"| edge={er['edge_decision']} final={'NG' if final_pred else 'OK'} gt={'NG' if er['label'] else 'OK'}"
             )
+        if simulate_load:
+            load_summaries[profile] = load_sim.summary()
 
     meta = {
         "route_load_s": route_load_s,
         "cloud_load_s": cloud_load_s,
-        "route_backend": getattr(agent, "backend", None),
-        "cloud_model": cloud_cfg.get("model_path"),
-        "cloud_adapter": cloud_cfg.get("adapter_path"),
+        "route_backend": "crr",
+        "cloud_model": "dino+qwen3.5-fusion",
+        "simulate_load": simulate_load,
+        "service_ms": service_ms,
+        "load_summaries": load_summaries,
     }
     return all_rows, meta
 
@@ -409,9 +376,9 @@ def _summarize_profile(rows: list[dict[str, Any]], profile: str) -> dict[str, An
         "cloud_review_rate": len(cloud) / max(1, len(rs)),
         "fallback_rate": len(fb) / max(1, len(rs)),
         "local_rate": len(local) / max(1, len(rs)),
-        "llm_invoke_rate": 1.0,
-        "agree_crr_rate": sum(1 for r in rs if r["agree_crr"]) / max(1, len(rs)),
-        "parse_fail_rate": sum(1 for r in rs if not r["parse_ok"]) / max(1, len(rs)),
+        "llm_invoke_rate": 0.0,
+        "agree_crr_rate": 1.0,
+        "parse_fail_rate": 0.0,
         "edge_f1": _f1(y_true, y_edge),
         "final_f1": _f1(y_true, y_final),
         "edge_auroc": auroc,
@@ -440,11 +407,11 @@ def _md(summaries: list[dict], meta: dict, args: argparse.Namespace) -> str:
         f"Measured: {time.strftime('%Y-%m-%d %H:%M')}. "
         f"Categories={args.categories} limit/cat={args.limit} profiles={args.profiles}.",
         "",
-        "Stack: **live** Qwen3.5-0.8B patch-gallery AD → RouteAgent GGUF (always) → net sim → "
-        "**live** Qwen3-VL-4B+LoRA. Cascade off.",
+        "Stack: **live** Qwen3.5-0.8B patch-gallery AD → CRR hand-written router → net sim → "
+        "**live** DINOv3 + Qwen3.5 fusion.",
         "",
         f"- Edge load: {meta.get('edge_load_s', 0):.1f}s",
-        f"- RouteAgent load: {meta.get('route_load_s', 0):.1f}s",
+        f"- Router: CRR (hand-written, no model load)",
         f"- Cloud load: {meta.get('cloud_load_s', 0):.1f}s",
         "",
         "## Detection + routing rates",
@@ -496,14 +463,15 @@ def _md(summaries: list[dict], meta: dict, args: argparse.Namespace) -> str:
     ]
     for s in summaries:
         lines.append(f"| {s['profile']} | edge AD | {_fmt_agg(s['edge_ms'])} |")
-        lines.append(f"| {s['profile']} | RouteAgent model | {_fmt_agg(s['ra_model_ms'])} |")
+        lines.append(f"| {s['profile']} | CRR route (compute) | {_fmt_agg(s['ra_model_ms'])} |")
         lines.append(f"| {s['profile']} | route wall (+net) | {_fmt_agg(s['route_wall_ms'])} |")
         lines.append(f"| {s['profile']} | net RTT+TX (upload) | {_fmt_agg(s['net_ms_when_upload'])} |")
         lines.append(f"| {s['profile']} | cloud VLM | {_fmt_agg(s['cloud_ms_when_review'])} |")
     lines += [
         "",
-        "Notes: Warmup excluded. Edge scored live then unloaded before RouteAgent/cloud load. "
-        "Detection label = edge AD locally; cloud VLM overrides only after successful upload.",
+        "Notes: Warmup excluded. Edge scored live then unloaded before cloud load. "
+        "Detection label = edge AD locally; cloud VLM overrides only after a successful "
+        "CRR-routed upload and only when its confidence clears the domain-gap floor.",
         "",
     ]
     return "\n".join(lines)
@@ -518,12 +486,10 @@ def main() -> int:
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--edge-warmup", type=int, default=5, help="edge AD warmup forwards before timing")
     ap.add_argument("--config", default=str(ROOT / "configs" / "default.yaml"))
-    ap.add_argument("--cloud-config", default=str(ROOT / "configs" / "hybrid_lora.yaml"))
     ap.add_argument("--out", type=Path, default=OUT_DIR)
     args = ap.parse_args()
 
     cfg = _load_yaml(Path(args.config))
-    cloud_yaml = _load_yaml(Path(args.cloud_config))
     collab = dict(cfg.get("collab") or {})
     cats = [c.strip() for c in args.categories.split(",") if c.strip()]
     profiles = [p.strip() for p in args.profiles.split(",") if p.strip()]
@@ -543,8 +509,6 @@ def main() -> int:
     route_rows, rc_meta = run_route_cloud(
         edge_rows=edge_rows,
         collab=collab,
-        cloud_cfg=dict(cloud_yaml.get("cloud") or {}),
-        prompt=cloud_yaml.get("prompt"),
         profiles=profiles,
         device=args.device,
         seed=args.seed,

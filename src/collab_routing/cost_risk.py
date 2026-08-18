@@ -151,11 +151,13 @@ class CostRiskRouter(CollabRouter):
         max_inflight: int | None = None,
         cloud: CloudState | None = None,
     ) -> AdmitResult:
-        k = int(
-            max_inflight
-            if max_inflight is not None
-            else (cloud.max_inflight if cloud is not None else self.max_inflight)
-        )
+        if max_inflight is not None:
+            k = int(max_inflight)
+        elif cloud is not None:
+            # Available slots = max_inflight − current inflight (never oversubscribe).
+            k = max(0, int(cloud.max_inflight) - int(cloud.inflight))
+        else:
+            k = self.max_inflight
         wanting = [c for c in candidates if c.verdict.upload]
         local = [c for c in candidates if not c.verdict.upload]
         for c in wanting:

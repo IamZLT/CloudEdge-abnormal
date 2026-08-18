@@ -8,7 +8,7 @@ image input unified to 224×224):
   - fusion      : standalone cloud = DINOv3 (ViT-L) + Qwen3.5-2B fusion
                   (Cloud-abnormal-cx "traditional + model combined" scheme)
   - collab_sft  : cloud–edge link = SFT edge detection + kNN-score CRR routing
-                  + cloud VLM review (Qwen3-VL-4B + LoRA, domain allowlist)
+                  + cloud DINOv3 + Qwen3.5 fusion review
 
 Detection metrics use per-category macro F1. The fusion scheme emits a
 continuous anomaly score, so it is reported with AUROC / AP / F1-max
@@ -30,7 +30,7 @@ from sklearn.metrics import f1_score
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "reports" / "cloud_edge_compare"
-CX_OUT = ROOT / "Cloud-abnormal-cx" / "outputs_224"
+CX_OUT = ROOT / "outputs" / "cloud_abnormal_cx_224"
 
 DOMAIN = {"screw", "cable", "pill", "capsule", "zipper"}
 N_TEST = 970
@@ -150,7 +150,7 @@ def main() -> int:
         print("|------|----|")
         print(f"| 上传率 | {s['upload_rate']*100:.1f}% |")
         print(f"| 云端复核率 | {s['cloud_review_rate']*100:.1f}% |")
-        print(f"| 云端实际调用率 (域内 LoRA) | {s['cloud_used_rate']*100:.1f}% |")
+        print(f"| 云端实际调用率 | {s['cloud_used_rate']*100:.1f}% |")
         print(f"| 边缘 kNN 分数延迟 (ms) | {_fmt_ms(s.get('knn_ms'))} |")
         print(f"| 边缘 SFT 生成延迟 (ms) | {_fmt_ms(s.get('sft_ms'))} |")
         print(f"| 网络延迟 (ms, 上传时) | {_fmt_ms(s.get('net_ms_when_upload'))} |")

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Cloud–edge full-test-set comparison: edge-only vs cloud-only vs collab.
 
-Three schemes, each runnable independently (so they can be launched on separate
-free GPUs in parallel), each writing its own JSON to --out:
+Schemes, each runnable independently (so they can be launched on separate free
+GPUs in parallel), each writing its own JSON to --out:
 
-    --scheme edge    Qwen3.5-0.8B multi-layer patch gallery (train/good bank,
-                     leave-one-out threshold). Image-level detection only.
-    --scheme cloud   Qwen3-VL-4B (+LoRA) direct OK/NG verdict per image.
-    --scheme collab  edge AD → hand-written CRR routing (uncertainty + live geo
-                     network + cloud load) → cloud VLM arbitration with LoRA
-                     domain allowlist.
+    --scheme edge       Qwen3.5-0.8B multi-layer patch gallery (train/good bank,
+                        leave-one-out threshold). Image-level detection only.
+    --scheme sft_edge   Qwen3.5-0.8B + reason LoRA generative (Yes/No + reason).
+    --scheme cloud      DINOv3 (pixel kNN) + Qwen3.5 semantic fusion detector.
+    --scheme collab     edge kNN AD → hand-written CRR routing → DINO+Qwen fusion.
+    --scheme collab_sft SFT edge detection + kNN routing → DINO+Qwen fusion.
 
 Base metrics collected for every scheme:
     F1 / precision / recall / accuracy / image-AUROC, latency (ms), FLOPs,
@@ -19,7 +19,7 @@ Base metrics collected for every scheme:
 Example (parallel):
   CUDA_VISIBLE_DEVICES=0 python scripts/bench_cloud_edge_compare.py --scheme edge
   CUDA_VISIBLE_DEVICES=6 python scripts/bench_cloud_edge_compare.py --scheme cloud
-  CUDA_VISIBLE_DEVICES=1 python scripts/bench_cloud_edge_compare.py --scheme collab
+  CUDA_VISIBLE_DEVICES=1 python scripts/bench_cloud_edge_compare.py --scheme collab_sft
 """
 from __future__ import annotations
 
@@ -50,6 +50,8 @@ sys.path.insert(0, str(ROOT))
 from edge.infer import DEFAULT_PATHS  # noqa: E402
 from edge.methods.encoders import load_qwen35_vision_encoder  # noqa: E402
 from edge.methods.patch_gallery_ad import PatchGalleryAD  # noqa: E402
+from src.cloud_load import CloudLoadSim  # noqa: E402
+from src.cloud_reviewer import CloudReviewer  # noqa: E402
 from src.collab_routing import CloudState, RouteSignal, build_router  # noqa: E402
 from src.network_geo import live_network_dict, make_geo_simulator  # noqa: E402
 from src.vlm import QwenVLClient  # noqa: E402
@@ -198,6 +200,32 @@ def _free() -> None:
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _build_cloud_reviewer(device: str, *, use_large: bool = False, threshold: float = 0.67) -> CloudReviewer:
+    """Build the unified DINOv3 + Qwen3.5 fusion cloud reviewer.
+
+    Memory banks (``outputs/cloud_abnormal_cx_224/memory``) must
+    already exist per category. Threshold 0.67 is the F1-max operating point on
+    the 224-resolution MVTec-LLM split.
+    """
+    return CloudReviewer(
+        config_path=None,
+        memory_dir=None,
+        dataset="mvtec_llm",
+        device=device,
+        use_large=use_large,
+        threshold=threshold,
+    )
+
+
+def _cloud_params_m(reviewer: CloudReviewer) -> tuple[float, float]:
+    """Return (dino_params_m, qwen_params_m) for the fusion detector."""
+    dino = sum(p.numel() for p in reviewer.detector.encoder.model.parameters()) / 1e6
+    qwen = 0.0
+    if reviewer.detector.qwen is not None:
+        qwen = sum(p.numel() for p in reviewer.detector.qwen.model.parameters()) / 1e6
+    return float(dino), float(qwen)
 
 
 # --------------------------------------------------------------------------- edge
@@ -379,40 +407,17 @@ def run_sft_edge(
 # --------------------------------------------------------------------------- cloud
 def run_cloud(
     *,
-    cloud_cfg: dict[str, Any],
     categories: list[str],
     data_root: Path,
     device: str,
-    prompt: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    print(f"[cloud] load Qwen3-VL-4B (+LoRA) @ {device} ...")
+    print(f"[cloud] load DINOv3+Qwen3.5 fusion reviewer @ {device} ...")
     t0 = time.perf_counter()
-    cloud = QwenVLClient(
-        model_path=cloud_cfg["model_path"],
-        adapter_path=cloud_cfg.get("adapter_path"),
-        device=device,
-        dtype=cloud_cfg.get("dtype", "bfloat16"),
-        max_new_tokens=int(cloud_cfg.get("max_new_tokens", 160)),
-        role="cloud",
-        prompt=prompt,
-    )
+    reviewer = _build_cloud_reviewer(device)
     load_s = time.perf_counter() - t0
     print(f"[cloud] loaded in {load_s:.1f}s")
 
-    params_m = _count_params(cloud.model)
-    # thop profile of the Qwen3-VL vision tower can hang on dynamic grid_thw,
-    # so estimate vision FLOPs analytically: ≈ 2 · params · visual_tokens.
-    # Note: PeftModel wraps base → vision tower lives at base_model.model.model.visual.
-    vision_flops_g = None
-    try:
-        base = getattr(cloud.model, "base_model", None)
-        base = getattr(base, "model", None) or base
-        visual = base.model.visual
-        v_params = sum(p.numel() for p in visual.parameters()) / 1e6
-        n_tok = (224 // 14) ** 2  # patch 14 → 16×16 grid (pre-merge)
-        vision_flops_g = float(2.0 * v_params * n_tok / 1e3)
-    except Exception:
-        vision_flops_g = None
+    dino_params_m, qwen_params_m = _cloud_params_m(reviewer)
 
     if torch.cuda.is_available() and device.startswith("cuda"):
         torch.cuda.reset_peak_memory_stats()
@@ -425,21 +430,21 @@ def run_cloud(
         print(f"[cloud] {cat}: n_test={len(test_items)}")
         labels, preds, scores, lats = [], [], [], []
         for path, y in test_items:
-            vlm = cloud.infer(Path(path))
-            decision = str(vlm.decision).upper() if vlm.decision else "OK"
-            pred = 1 if decision == "NG" else 0
-            conf = float(vlm.confidence)
-            score = conf if pred else 1.0 - conf
+            res = reviewer.review(path, cat)
+            pred = 1 if res["decision"] == "NG" else 0
+            score = float(res["score"])
             labels.append(y)
             preds.append(pred)
             scores.append(score)
-            lats.append(float(vlm.latency_ms or 0.0))
+            lats.append(float(res["latency_ms"]))
             rows.append(
                 {
                     "category": cat, "path": str(path), "label": int(y),
-                    "decision": decision, "confidence": conf, "pred": pred,
-                    "latency_ms": float(vlm.latency_ms or 0.0),
-                    "defect_type": vlm.defect_type, "reason": vlm.reason,
+                    "decision": res["decision"], "score": score, "pred": pred,
+                    "latency_ms": float(res["latency_ms"]),
+                    "qwen_probability": res["qwen_probability"],
+                    "qwen_defect_type": res["qwen_defect_type"],
+                    "qwen_reason": res["qwen_reason"],
                 }
             )
         per_cat[cat] = _det(labels, preds, scores)
@@ -451,12 +456,12 @@ def run_cloud(
 
     _free()
     base_metrics = {
-        "params_m": float(params_m),
-        "vision_flops_g": vision_flops_g,
-        "llm_flops_per_token_g": float(params_m * 2.0 / 1e3),  # ≈ 2·N per generated token (GFLOPs)
+        "dino_params_m": dino_params_m,
+        "qwen_params_m": qwen_params_m,
+        "params_m": float(dino_params_m + qwen_params_m),
         "peak_mem_mb": peak,
         "load_s": float(load_s),
-        "backbone": "Qwen3-VL-4B+LoRA",
+        "backbone": "DINOv3-ViT-L + Qwen3.5-2B fusion",
     }
     return {"per_category": per_cat, "macro": _macro(per_cat), "rows": rows}, base_metrics
 
@@ -465,15 +470,12 @@ def run_cloud(
 def run_collab(
     *,
     cfg: dict[str, Any],
-    cloud_cfg: dict[str, Any],
     categories: list[str],
     data_root: Path,
     device: str,
-    prompt: str | None,
     scenario: str,
     seed: int,
     max_gallery: int,
-    min_cloud_conf: float,
     warmup: int = 5,
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     collab = dict(cfg.get("collab") or {})
@@ -482,7 +484,6 @@ def run_collab(
     layers = edge_cfg.get("layers") or [6, 8, 10, 12]
     fusion_temp = float(edge_cfg.get("fusion_temp") or 0.5)
     model_path = edge_cfg.get("model_path") or DEFAULT_PATHS["qwen35"]
-    cloud_categories = {str(c).strip() for c in (cloud_cfg.get("categories") or [])}
     hard_margin = float(collab.get("hard_margin") or collab.get("thr_margin") or 0.05)
     up_bytes = int(collab.get("upload_bytes_hard") or 80000)
 
@@ -533,24 +534,23 @@ def run_collab(
     max_inflight = int(adm.get("max_inflight", 2))
     sim = make_geo_simulator(collab, scenario, seed=seed, edge_id=f"edge-{scenario}")
 
-    print(f"[collab] cloud load @ {device} ...")
+    print(f"[collab] cloud load (DINO+Qwen fusion) @ {device} ...")
     t1 = time.perf_counter()
-    cloud = QwenVLClient(
-        model_path=cloud_cfg["model_path"],
-        adapter_path=cloud_cfg.get("adapter_path"),
-        device=device,
-        dtype=cloud_cfg.get("dtype", "bfloat16"),
-        max_new_tokens=int(cloud_cfg.get("max_new_tokens", 160)),
-        role="cloud",
-        prompt=prompt,
-    )
+    reviewer = _build_cloud_reviewer(device)
     cloud_load_s = time.perf_counter() - t1
-    cloud_params_m = _count_params(cloud.model)
+    _dino_pm, _qwen_pm = _cloud_params_m(reviewer)
+    cloud_params_m = _dino_pm + _qwen_pm
     print(f"[collab] cloud loaded in {cloud_load_s:.1f}s")
 
-    cloud_state = CloudState(inflight=0, queue=0, max_inflight=max_inflight)
+    adm = dict(collab.get("cloud_admission") or {})
+    service_ms = float(adm.get("service_ms", 3000.0))
+    simulate_load = bool(adm.get("simulate_load", True))
+    load_sim = CloudLoadSim(max_inflight=max_inflight, service_ms=service_ms)
+    sim_clock = 0.0  # virtual edge arrival clock (ms)
     rows: list[dict[str, Any]] = []
     for i, er in enumerate(edge_rows):
+        sim_clock += float(er["edge_ms"])
+        load_sim.advance(sim_clock)
         net = live_network_dict(sim)
         sig = RouteSignal(
             category=er["category"],
@@ -564,6 +564,7 @@ def run_collab(
             edge_node_id=f"edge-{scenario}",
             conflict=0.0,
         )
+        cloud_state = load_sim.state() if simulate_load else CloudState(inflight=0, queue=0, max_inflight=max_inflight)
         verd = router.decide(sig, cloud_state)
         upload = bool(verd.upload)
 
@@ -576,24 +577,20 @@ def run_collab(
 
         cloud_ms = 0.0
         cloud_decision = None
-        cloud_conf = None
+        cloud_score = None
         cloud_used = False
         cloud_fallback = False
         if upload and net_ok:
-            use_vlm = bool(cloud_categories) and er["category"] in cloud_categories
-            if use_vlm:
-                cloud_used = True
-                vlm = cloud.infer(Path(er["path"]))
-                cloud_ms = float(vlm.latency_ms or 0.0)
-                cloud_conf = float(vlm.confidence)
-                if vlm.parse_ok and vlm.decision in {"OK", "NG"} and cloud_conf >= min_cloud_conf:
-                    cloud_decision = str(vlm.decision).upper()
-                else:
-                    cloud_fallback = True
-                    cloud_decision = er["edge_decision"]
-            else:
-                # out-of-domain category → don't trust LoRA, keep edge decision
-                cloud_decision = er["edge_decision"]
+            # DINO+Qwen fusion is "only enhance, never suppress" and its memory
+            # bank is per-category, so no LoRA domain allowlist / confidence floor
+            # is needed — the fusion is fail-safe by construction.
+            cloud_used = True
+            if simulate_load:
+                load_sim.submit(sim_clock + net_ms)
+            res = reviewer.review(er["path"], er["category"])
+            cloud_ms = float(res["latency_ms"])
+            cloud_score = float(res["score"])
+            cloud_decision = res["decision"]
 
         final_decision = cloud_decision if (upload and net_ok and cloud_decision) else er["edge_decision"]
         final_pred = 1 if final_decision == "NG" else 0
@@ -607,7 +604,7 @@ def run_collab(
                 "edge_decision": er["edge_decision"], "edge_pred": er["edge_pred"],
                 "edge_ms": er["edge_ms"], "upload": upload, "net_ok": net_ok,
                 "net_ms": net_ms, "cloud_ms": cloud_ms, "cloud_used": cloud_used,
-                "cloud_fallback": cloud_fallback, "cloud_conf": cloud_conf,
+                "cloud_fallback": cloud_fallback, "cloud_score": cloud_score,
                 "path_type": path_type, "final_decision": final_decision,
                 "final_pred": final_pred, "total_ms": total_ms, "crr_reason": verd.reason,
             }
@@ -634,6 +631,9 @@ def run_collab(
         "cloud_params_m": float(cloud_params_m),
         "edge_load_s": float(edge_load_s),
         "cloud_load_s": float(cloud_load_s),
+        "simulate_load": simulate_load,
+        "service_ms": float(service_ms),
+        "load_summary": load_sim.summary() if simulate_load else {},
     }
 
     summary = {
@@ -660,17 +660,14 @@ def run_collab(
 def run_collab_sft(
     *,
     cfg: dict[str, Any],
-    cloud_cfg: dict[str, Any],
     categories: list[str],
     data_root: Path,
     device: str,
-    prompt: str | None,
     sft_model: str,
     sft_adapter: str,
     scenario: str,
     seed: int,
     max_gallery: int,
-    min_cloud_conf: float,
     warmup: int = 5,
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """Collab where edge DETECTION = SFT generative (Yes/No+reason), but upload
@@ -679,7 +676,7 @@ def run_collab_sft(
     Phases:
       1. vision tower → kNN edge_score (upload signal)
       2. full 0.8B + reason LoRA → edge Yes/No (edge detection result)
-      3. CRR route (on kNN score) + cloud VLM review (domain allowlist)
+      3. CRR route (on kNN score) + cloud DINO+Qwen fusion review
     Final = cloud review when uploaded & trusted, else SFT edge Yes/No.
     """
     collab = dict(cfg.get("collab") or {})
@@ -688,7 +685,6 @@ def run_collab_sft(
     layers = edge_cfg.get("layers") or [6, 8, 10, 12]
     fusion_temp = float(edge_cfg.get("fusion_temp") or 0.5)
     model_path = edge_cfg.get("model_path") or DEFAULT_PATHS["qwen35"]
-    cloud_categories = {str(c).strip() for c in (cloud_cfg.get("categories") or [])}
     hard_margin = float(collab.get("hard_margin") or collab.get("thr_margin") or 0.05)
     up_bytes = int(collab.get("upload_bytes_hard") or 80000)
 
@@ -764,26 +760,25 @@ def run_collab_sft(
     max_inflight = int(adm.get("max_inflight", 2))
     sim = make_geo_simulator(collab, scenario, seed=seed, edge_id=f"edge-{scenario}")
 
-    print(f"[collab_sft] cloud load @ {device} ...")
+    print(f"[collab_sft] cloud load (DINO+Qwen fusion) @ {device} ...")
     t3 = time.perf_counter()
-    cloud = QwenVLClient(
-        model_path=cloud_cfg["model_path"],
-        adapter_path=cloud_cfg.get("adapter_path"),
-        device=device,
-        dtype=cloud_cfg.get("dtype", "bfloat16"),
-        max_new_tokens=int(cloud_cfg.get("max_new_tokens", 160)),
-        role="cloud",
-        prompt=prompt,
-    )
+    reviewer = _build_cloud_reviewer(device)
     cloud_load_s = time.perf_counter() - t3
-    cloud_params_m = _count_params(cloud.model)
+    _dino_pm, _qwen_pm = _cloud_params_m(reviewer)
+    cloud_params_m = _dino_pm + _qwen_pm
     print(f"[collab_sft] cloud loaded in {cloud_load_s:.1f}s")
 
-    cloud_state = CloudState(inflight=0, queue=0, max_inflight=max_inflight)
+    adm = dict(collab.get("cloud_admission") or {})
+    service_ms = float(adm.get("service_ms", 3000.0))
+    simulate_load = bool(adm.get("simulate_load", True))
+    load_sim = CloudLoadSim(max_inflight=max_inflight, service_ms=service_ms)
+    sim_clock = 0.0  # virtual edge arrival clock (ms)
     rows: list[dict[str, Any]] = []
     for i, er in enumerate(kNN_rows):
         sft_dec, sft_reason, sft_ms = sft_map[er["path"]]
         edge_decision = "NG" if sft_dec == 1 else "OK"
+        sim_clock += float(er["knn_ms"]) + sft_ms
+        load_sim.advance(sim_clock)
 
         net = live_network_dict(sim)
         sig = RouteSignal(
@@ -798,6 +793,7 @@ def run_collab_sft(
             edge_node_id=f"edge-{scenario}",
             conflict=0.0,
         )
+        cloud_state = load_sim.state() if simulate_load else CloudState(inflight=0, queue=0, max_inflight=max_inflight)
         verd = router.decide(sig, cloud_state)
         upload = bool(verd.upload)
 
@@ -810,24 +806,19 @@ def run_collab_sft(
 
         cloud_ms = 0.0
         cloud_decision = None
-        cloud_conf = None
+        cloud_score = None
         cloud_used = False
         cloud_fallback = False
         if upload and net_ok:
-            use_vlm = bool(cloud_categories) and er["category"] in cloud_categories
-            if use_vlm:
-                cloud_used = True
-                vlm = cloud.infer(Path(er["path"]))
-                cloud_ms = float(vlm.latency_ms or 0.0)
-                cloud_conf = float(vlm.confidence)
-                if vlm.parse_ok and vlm.decision in {"OK", "NG"} and cloud_conf >= min_cloud_conf:
-                    cloud_decision = str(vlm.decision).upper()
-                else:
-                    cloud_fallback = True
-                    cloud_decision = edge_decision
-            else:
-                # out-of-domain → keep SFT edge decision
-                cloud_decision = edge_decision
+            # DINO+Qwen fusion is fail-safe by construction (per-category memory,
+            # only-enhance-never-suppress), so no domain allowlist / confidence floor.
+            cloud_used = True
+            if simulate_load:
+                load_sim.submit(sim_clock + net_ms)
+            res = reviewer.review(er["path"], er["category"])
+            cloud_ms = float(res["latency_ms"])
+            cloud_score = float(res["score"])
+            cloud_decision = res["decision"]
 
         final_decision = cloud_decision if (upload and net_ok and cloud_decision) else edge_decision
         final_pred = 1 if final_decision == "NG" else 0
@@ -844,7 +835,7 @@ def run_collab_sft(
                 "edge_pred": 1 if edge_decision == "NG" else 0,
                 "upload": upload, "net_ok": net_ok, "net_ms": net_ms,
                 "cloud_ms": cloud_ms, "cloud_used": cloud_used,
-                "cloud_fallback": cloud_fallback, "cloud_conf": cloud_conf,
+                "cloud_fallback": cloud_fallback, "cloud_score": cloud_score,
                 "path_type": path_type, "final_decision": final_decision,
                 "final_pred": final_pred, "total_ms": total_ms, "crr_reason": verd.reason,
             }
@@ -874,6 +865,9 @@ def run_collab_sft(
         "edge_load_s": float(edge_load_s),
         "sft_load_s": float(sft_load_s),
         "cloud_load_s": float(cloud_load_s),
+        "simulate_load": simulate_load,
+        "service_ms": float(service_ms),
+        "load_summary": load_sim.summary() if simulate_load else {},
     }
 
     summary = {
@@ -913,17 +907,14 @@ def main() -> int:
     ap.add_argument("--categories", default="all")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--config", default=str(ROOT / "configs" / "default.yaml"))
-    ap.add_argument("--cloud-config", default=str(ROOT / "configs" / "hybrid_lora.yaml"))
     ap.add_argument("--scenario", default="good")
     ap.add_argument("--max-gallery", type=int, default=16)
-    ap.add_argument("--min-cloud-conf", type=float, default=0.6)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--sft-model", default="/data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B")
     ap.add_argument("--sft-adapter", default=str(ROOT / "outputs" / "qwen35_reason_sft" / "adapter"))
     args = ap.parse_args()
 
     cfg = _load_yaml(Path(args.config))
-    cloud_yaml = _load_yaml(Path(args.cloud_config))
     data_root = Path(args.data_root)
     cats = CATS if args.categories == "all" else [c.strip() for c in args.categories.split(",") if c.strip()]
 
@@ -947,29 +938,24 @@ def main() -> int:
 
     elif args.scheme == "cloud":
         result, base = run_cloud(
-            cloud_cfg=dict(cloud_yaml.get("cloud") or {}), categories=cats,
-            data_root=data_root, device=args.device, prompt=cloud_yaml.get("prompt"),
+            categories=cats, data_root=data_root, device=args.device,
         )
         _save("cloud.json", {"scheme": "cloud", "base": base, "macro": result["macro"], "per_category": result["per_category"], "rows": result["rows"]})
         print(json.dumps({"base": base, "macro": result["macro"]}, indent=2, ensure_ascii=False))
 
     elif args.scheme == "collab":
         summary, base, rows = run_collab(
-            cfg=cfg, cloud_cfg=dict(cloud_yaml.get("cloud") or {}), categories=cats,
-            data_root=data_root, device=args.device, prompt=cloud_yaml.get("prompt"),
+            cfg=cfg, categories=cats, data_root=data_root, device=args.device,
             scenario=args.scenario, seed=args.seed, max_gallery=args.max_gallery,
-            min_cloud_conf=args.min_cloud_conf,
         )
         _save("collab.json", {"scheme": "collab", "base": base, "summary": summary, "rows": rows})
         print(json.dumps({"base": base, "summary": summary}, indent=2, ensure_ascii=False))
 
     elif args.scheme == "collab_sft":
         summary, base, rows = run_collab_sft(
-            cfg=cfg, cloud_cfg=dict(cloud_yaml.get("cloud") or {}), categories=cats,
-            data_root=data_root, device=args.device, prompt=cloud_yaml.get("prompt"),
+            cfg=cfg, categories=cats, data_root=data_root, device=args.device,
             sft_model=args.sft_model, sft_adapter=args.sft_adapter,
             scenario=args.scenario, seed=args.seed, max_gallery=args.max_gallery,
-            min_cloud_conf=args.min_cloud_conf,
         )
         _save("collab_sft.json", {"scheme": "collab_sft", "base": base, "summary": summary, "rows": rows})
         print(json.dumps({"base": base, "summary": summary}, indent=2, ensure_ascii=False))

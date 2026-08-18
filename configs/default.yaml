@@ -79,6 +79,11 @@ collab:
     # margin-weighted vote. Prevents a LoRA tuned on [screw,cable,pill,capsule,
     # zipper] from overriding a correct edge call on an unseen category (bottle).
     min_cloud_conf: 0.6
+    # Discrete-event cloud-load sim for the -w_c*c_cloud CRR term. The sequential
+    # for-loop alone keeps inflight ≈ 0, so a c-server queue (service_ms per
+    # request) models real congestion; CRR then sheds marginal uploads under load.
+    simulate_load: true
+    service_ms: 3000.0   # nominal cloud review latency (ms) per in-flight request
   # Multi-edge fleet (1 cloud + N edges). Alias: num_edge_nodes
   num_edge_nodes: 3
   edge_fleet:

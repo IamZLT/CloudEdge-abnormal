@@ -1,7 +1,0 @@
-{
-  "anomaly_probability": 0.9,
-  "defect_type": "chip/crack",
-  "regions": [],
-  "reason": "Qwen response required tolerant parsing",
-  "parse_fallback": true
-}

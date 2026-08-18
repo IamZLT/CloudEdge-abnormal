@@ -122,11 +122,13 @@ class CollabRouter(ABC):
         Default: keep candidates with upload=True, rank by utility, take Top-K.
         Algorithms may override (e.g. CRR value-density ranking).
         """
-        k = int(
-            max_inflight
-            if max_inflight is not None
-            else (cloud.max_inflight if cloud is not None else 2)
-        )
+        if max_inflight is not None:
+            k = int(max_inflight)
+        elif cloud is not None:
+            # Available slots = max_inflight − current inflight (never oversubscribe).
+            k = max(0, int(cloud.max_inflight) - int(cloud.inflight))
+        else:
+            k = 2
         wanting = [c for c in candidates if c.verdict.upload]
         local = [c for c in candidates if not c.verdict.upload]
         ranked = sorted(wanting, key=lambda c: float(c.verdict.utility), reverse=True)
