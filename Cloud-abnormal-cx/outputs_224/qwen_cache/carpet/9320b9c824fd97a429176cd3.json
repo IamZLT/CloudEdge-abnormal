@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "scratch",
+  "regions": [
+    {
+      "bbox": [
+        400,
+        300,
+        450,
+        350
+      ],
+      "confidence": 0.85,
+      "defect": "scratch"
+    }
+  ],
+  "reason": "Visible scratch detected on fabric surface."
+}

@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "minor surface blemish",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        550,
+        500,
+        600
+      ],
+      "confidence": 0.85,
+      "defect": "surface blemish"
+    }
+  ],
+  "reason": "minor surface blemish detected on transistor body."
+}

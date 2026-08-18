@@ -1,0 +1,37 @@
+{
+  "anomaly_probability": 0.85,
+  "defect_type": "surface blemish",
+  "regions": [
+    {
+      "bbox": [
+        200,
+        200,
+        280,
+        300
+      ],
+      "confidence": 0.92,
+      "defect": "small discoloration"
+    },
+    {
+      "bbox": [
+        500,
+        150,
+        580,
+        250
+      ],
+      "confidence": 0.88,
+      "defect": "surface blemish"
+    },
+    {
+      "bbox": [
+        700,
+        300,
+        780,
+        400
+      ],
+      "confidence": 0.85,
+      "defect": "surface blemish"
+    }
+  ],
+  "reason": "Three distinct surface blemishes detected."
+}

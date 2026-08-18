@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "scratch",
+  "regions": [
+    {
+      "bbox": [
+        18,
+        500,
+        100,
+        600
+      ],
+      "confidence": 0.85,
+      "defect": "scratch on capsule body"
+    }
+  ],
+  "reason": "Visible scratch on capsule body."
+}

@@ -1,0 +1,7 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "color/texture irregularity",
+  "regions": [],
+  "reason": "blue speck detected on pill surface.",
+  "parse_fallback": true
+}

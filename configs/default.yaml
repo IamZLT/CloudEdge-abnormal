@@ -58,13 +58,27 @@ collab:
     w_n: 0.8
     w_c: 0.5
     w_g: 0.6
+    w_conf: 0.7        # multi-node conflict weight in U (cloud = tiebreaker)
     rtt_ref_ms: 80
     bw_ref_mbps: 50
     weak_c_net: 0.75
     force_unc: 0.85
+  # Multi-node conflict (hand-written, no LLM). N nodes judge the SAME image
+  # under different deterministic augmentations; disagreement = conflict.
+  # Brightness drift (esp. darkening) is what moves patch-gallery scores across
+  # the threshold. Measured conflict on bottle (~110 test): 0.9/1.1 ≈ 2%,
+  # 0.85/1.15 ≈ 5%, 0.8/1.2 ≈ 10%, 0.7/1.3 ≈ 20%. Default targets M6 <=5%.
+  conflict:
+    n_nodes: 3
+    augs: [identity, brightness-0.85, brightness-1.15]
   cloud_admission:
     max_inflight: 2
     fairness_gamma: 0.1
+    # Cloud VLM review confidence floor. Below this the cloud result is NOT
+    # adopted (domain-gap guard); arbitration falls back to the hand-written
+    # margin-weighted vote. Prevents a LoRA tuned on [screw,cable,pill,capsule,
+    # zipper] from overriding a correct edge call on an unseen category (bottle).
+    min_cloud_conf: 0.6
   # Multi-edge fleet (1 cloud + N edges). Alias: num_edge_nodes
   num_edge_nodes: 3
   edge_fleet:
@@ -111,10 +125,11 @@ collab:
   network:
     profile: geo
     seed: 42
-  # Qwen3.5-0.8B multimodal agent: decide upload vs local
-  # default: gguf Q4_K_M LLM + mmproj-F16 (llama-cpp-python, CUDA preferred)
+  # Qwen3.5-0.8B multimodal agent: legacy LLM upload router.
+  # enabled=false: routing is hand-written CRR (cost_risk + conflict); the LLM is
+  # used ONLY for detection (edge AD + cloud VLM review), never for the route.
   route_agent:
-    enabled: true
+    enabled: false
     # backend: gguf (default Q4) | hf (bf16 full VL)
     backend: gguf
     # text|auto: reuse AD CONTEXT, skip 2nd vision encode; full: re-encode image

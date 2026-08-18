@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "dents",
+  "regions": [
+    {
+      "bboxd": [
+        480,
+        700,
+        520,
+        750
+      ],
+      "confidence": 0.85,
+      "defect": "dents"
+    }
+  ],
+  "reason": "Minor dents detected on screw head."
+}

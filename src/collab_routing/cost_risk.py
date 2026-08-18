@@ -27,6 +27,7 @@ class CostRiskRouter(CollabRouter):
         self.w_n = float(cr.get("w_n", 0.8))
         self.w_c = float(cr.get("w_c", 0.5))
         self.w_g = float(cr.get("w_g", 0.6))
+        self.w_conf = float(cr.get("w_conf", 0.7))
         self.rtt_ref = float(cr.get("rtt_ref_ms", 80.0))
         self.bw_ref = float(cr.get("bw_ref_mbps", 50.0))
         self.weak_c_net = float(cr.get("weak_c_net", 0.75))
@@ -56,6 +57,7 @@ class CostRiskRouter(CollabRouter):
         n_g = int(signal.n_gallery)
         h0 = float(signal.hard_margin)
         m = signal.score_margin()
+        conflict = clip(float(getattr(signal, "conflict", 0.0) or 0.0), 0.0, 1.0)
 
         if outage:
             return RouteVerdict(
@@ -63,7 +65,12 @@ class CostRiskRouter(CollabRouter):
                 utility=float("-inf"),
                 reason="crr: outage — stay local",
                 algorithm=self.name,
-                features={"outage": True, "score_margin": m, "n_gallery": n_g},
+                features={
+                    "outage": True,
+                    "score_margin": m,
+                    "n_gallery": n_g,
+                    "conflict": conflict,
+                },
             )
 
         scale = clip(self.n_ref / max(n_g, 1), self.h_clip_lo, self.h_clip_hi)
@@ -78,7 +85,8 @@ class CostRiskRouter(CollabRouter):
             k = int(cloud.max_inflight or self.max_inflight)
             c_cloud = clip(cloud.load / max(k, 1), 0.0, 1.0)
 
-        U = u_unc - self.w_n * c_net - self.w_c * c_cloud
+        # Conflict is a strong upload trigger (cloud is the tiebreaker).
+        U = u_unc + self.w_conf * conflict - self.w_n * c_net - self.w_c * c_cloud
         cold = n_g <= 0
         if cold:
             U += self.w_g
@@ -88,6 +96,7 @@ class CostRiskRouter(CollabRouter):
             "h0": h0,
             "h_eff": h_eff,
             "u_unc": u_unc,
+            "conflict": conflict,
             "c_net": c_net,
             "c_cloud": c_cloud,
             "n_gallery": n_g,
@@ -95,6 +104,7 @@ class CostRiskRouter(CollabRouter):
             "w_n": self.w_n,
             "w_c": self.w_c,
             "w_g": self.w_g,
+            "w_conf": self.w_conf,
             "cold_start": cold,
         }
 
@@ -108,7 +118,9 @@ class CostRiskRouter(CollabRouter):
                 features=features,
             )
 
-        if c_net >= self.weak_c_net and u_unc < self.force_unc:
+        # Weak-link guard: suppressed only when NOT strongly conflicted; conflict
+        # lets the utility trade conflict benefit against link cost directly.
+        if c_net >= self.weak_c_net and u_unc < self.force_unc and conflict < 0.5:
             return RouteVerdict(
                 upload=False,
                 utility=U,
@@ -124,7 +136,8 @@ class CostRiskRouter(CollabRouter):
             upload=upload,
             utility=float(U),
             reason=(
-                f"crr: U={U:.3f} (unc={u_unc:.3f} - net={c_net:.3f} - cloud={c_cloud:.3f})"
+                f"crr: U={U:.3f} (unc={u_unc:.3f} + conf={conflict:.2f} "
+                f"- net={c_net:.3f} - cloud={c_cloud:.3f})"
                 + (" — upload" if upload else " — local")
             ),
             algorithm=self.name,

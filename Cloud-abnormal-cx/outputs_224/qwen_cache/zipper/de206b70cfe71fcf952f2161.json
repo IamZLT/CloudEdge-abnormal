@@ -1,0 +1,28 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "minor surface imperfection",
+  "regions": [
+    {
+      "bbox": [
+        480.0,
+        700.0,
+        490.0,
+        710.0
+      ],
+      "confidence": 0.85,
+      "defect": "small speck"
+    },
+    {
+      "bbox": [
+        520.0,
+        700.0,
+        530.0,
+        710.0
+      ],
+      "confidence": 0.78,
+      "defect": "small speck"
+    }
+  ],
+  "reason": "Minor surface imperfections detected in zipper fabric.",
+  "parse_fallback": true
+}

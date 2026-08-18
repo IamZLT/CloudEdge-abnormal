@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "dents",
+  "regions": [
+    {
+      "bboxd": [
+        100,
+        500,
+        150,
+        600
+      ],
+      "confidence": 0.92,
+      "defect": "dents"
+    }
+  ],
+  "reason": "dents detected on pill surface."
+}

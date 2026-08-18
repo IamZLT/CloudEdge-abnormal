@@ -1,0 +1,37 @@
+{
+  "anomaly_probability": 0.85,
+  "defect_type": "holes",
+  "regions": [
+    {
+      "bbox": [
+        480,
+        600,
+        500,
+        620
+      ],
+      "confidence": 0.92,
+      "defect": "hole"
+    },
+    {
+      "bbox": [
+        680,
+        280,
+        700,
+        300
+      ],
+      "confidence": 0.88,
+      "defect": "hole"
+    },
+    {
+      "bbox": [
+        180,
+        680,
+        220,
+        720
+      ],
+      "confidence": 0.95,
+      "defect": "hole"
+    }
+  ],
+  "reason": "Three distinct holes detected in wood surface."
+}

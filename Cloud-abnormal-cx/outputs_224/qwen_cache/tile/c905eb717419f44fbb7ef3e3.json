@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "contamination",
+  "regions": [
+    {
+      "bbox": [
+        300,
+        200,
+        600,
+        400
+      ],
+      "confidence": 0.92,
+      "defect": "yellowish contamination"
+    }
+  ],
+  "reason": "yellowish contamination detected on tile surface."
+}

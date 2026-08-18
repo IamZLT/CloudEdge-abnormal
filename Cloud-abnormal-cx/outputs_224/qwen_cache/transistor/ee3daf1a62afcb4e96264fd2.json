@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "minor surface blemish",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        450,
+        550,
+        550
+      ],
+      "confidence": 0.85,
+      "defect": "small discoloration"
+    }
+  ],
+  "reason": "minor surface blemish detected in center region."
+}

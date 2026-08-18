@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        400,
+        200,
+        600,
+        400
+      ],
+      "confidence": 0.85,
+      "defect": "color/texture irregularity"
+    }
+  ],
+  "reason": "color/texture irregularity detected in nut surface."
+}

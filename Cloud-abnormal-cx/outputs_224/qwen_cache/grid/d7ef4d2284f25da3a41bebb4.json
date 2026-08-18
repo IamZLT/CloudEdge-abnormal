@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "minor scratch",
+  "regions": [
+    {
+      "bbox": [
+        10,
+        300,
+        20,
+        350
+      ],
+      "confidence": 0.85,
+      "defect": "scratch"
+    }
+  ],
+  "reason": "minor scratch detected on surface."
+}

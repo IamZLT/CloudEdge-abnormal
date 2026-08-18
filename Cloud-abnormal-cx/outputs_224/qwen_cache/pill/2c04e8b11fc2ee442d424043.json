@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.85,
+  "defect_type": "scratch",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        350,
+        550,
+        450
+      ],
+      "confidence": 0.92,
+      "defect": "scratch on pill surface"
+    }
+  ],
+  "reason": "Scratch detected on pill surface."
+}

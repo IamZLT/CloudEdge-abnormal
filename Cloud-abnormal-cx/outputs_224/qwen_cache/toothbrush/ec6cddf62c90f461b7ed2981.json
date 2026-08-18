@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "scratch",
+  "regions": [
+    {
+      "bbox": [
+        480,
+        700,
+        520,
+        750
+      ],
+      "confidence": 0.85,
+      "defect": "scratch on bristle head"
+    }
+  ],
+  "reason": "Visible scratch on bristle head."
+}

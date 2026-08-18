@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "surface_burr",
+  "regions": [
+    {
+      "bboxd": [
+        480,
+        100,
+        510,
+        150
+      ],
+      "confidence": 0.85,
+      "defect": "surface_burr"
+    }
+  ],
+  "reason": "Small surface burr detected on top of transistor."
+}

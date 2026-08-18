@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "structural_inconsistency",
+  "regions": [
+    {
+      "bboxd": [
+        580,
+        600,
+        750,
+        750
+      ],
+      "confidence": 0.92,
+      "defect": "missing central core"
+    }
+  ],
+  "reason": "Target shows missing central core in one cable, unlike reference."
+}

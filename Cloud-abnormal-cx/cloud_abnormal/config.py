@@ -42,6 +42,8 @@ class QwenConfig:
     normal_references: int = 3
     max_new_tokens: int = 384
     cache_dir: str = "outputs/qwen_cache"
+    min_pixels: int | None = None
+    max_pixels: int | None = None
 
 
 @dataclass

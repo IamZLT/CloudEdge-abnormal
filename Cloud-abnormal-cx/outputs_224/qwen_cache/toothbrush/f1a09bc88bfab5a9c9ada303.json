@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        300,
+        100,
+        350,
+        200
+      ],
+      "confidence": 0.92,
+      "defect": "color mismatch"
+    }
+  ],
+  "reason": "Target brush bristles show inconsistent color, some yellow instead of blue."
+}

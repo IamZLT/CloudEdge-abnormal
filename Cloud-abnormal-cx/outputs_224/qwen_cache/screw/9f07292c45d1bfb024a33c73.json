@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "minor surface imperfection",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        650,
+        465,
+        665
+      ],
+      "confidence": 0.82,
+      "defect": "surface scratch"
+    }
+  ],
+  "reason": "Minor surface scratch detected on screw head."
+}

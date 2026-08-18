@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        500,
+        500,
+        550,
+        550
+      ],
+      "confidence": 0.85,
+      "defect": "color/texture irregularity"
+    }
+  ],
+  "reason": "small color/texture irregularity detected in center region."
+}

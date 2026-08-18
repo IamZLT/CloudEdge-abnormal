@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "crack",
+  "regions": [
+    {
+      "bbox": [
+        280,
+        480,
+        310,
+        510
+      ],
+      "confidence": 0.85,
+      "defect": "crack"
+    }
+  ],
+  "reason": "Visible crack on glass surface."
+}

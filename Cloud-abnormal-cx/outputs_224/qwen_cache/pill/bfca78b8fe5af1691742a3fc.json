@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        100,
+        500,
+        150,
+        650
+      ],
+      "confidence": 0.92,
+      "defect": "yellow streak"
+    }
+  ],
+  "reason": "yellow streak detected on pill surface."
+}

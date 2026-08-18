@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "cracked tile",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        450,
+        650,
+        750
+      ],
+      "confidence": 0.98,
+      "defect": "cracked tile"
+    }
+  ],
+  "reason": "Visible crack in tile surface."
+}

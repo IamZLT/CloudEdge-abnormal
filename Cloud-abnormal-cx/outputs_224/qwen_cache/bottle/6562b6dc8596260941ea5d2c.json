@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "surface irregularity",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        400,
+        550,
+        500
+      ],
+      "confidence": 0.85,
+      "defect": "surface irregularity"
+    }
+  ],
+  "reason": "minor surface irregularity detected."
+}

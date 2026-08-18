@@ -28,6 +28,7 @@ class RouteSignal:
     hard_margin: float = 0.05  # h0
     edge_node_id: str | None = None
     recent_cloud: float = 0.0  # fairness counter for admission
+    conflict: float = 0.0  # multi-node disagreement 0..1 (0 = unanimous)
 
     def score_margin(self) -> float:
         return abs(float(self.edge_score) - float(self.edge_thr))

@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "crack",
+  "regions": [
+    {
+      "bbox": [
+        480,
+        500,
+        550,
+        600
+      ],
+      "confidence": 0.92,
+      "defect": "crack"
+    }
+  ],
+  "reason": "Visible crack on nut surface."
+}

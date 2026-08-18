@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "deformation",
+  "regions": [
+    {
+      "bboxd": [
+        100,
+        100,
+        200,
+        200
+      ],
+      "confidence": 0.9,
+      "defect": "deformation"
+    }
+  ],
+  "reason": "Target transistor shows significant deformation compared to reference."
+}

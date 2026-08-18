@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "structural inconsistency",
+  "regions": [
+    {
+      "bbox": [
+        400,
+        500,
+        600,
+        700
+      ],
+      "confidence": 0.92,
+      "defect": "missing top cap"
+    }
+  ],
+  "reason": "Missing top cap indicates structural inconsistency."
+}

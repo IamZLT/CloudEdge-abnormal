@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "frayed edge",
+  "regions": [
+    {
+      "bbox": [
+        950,
+        450,
+        1000,
+        550
+      ],
+      "confidence": 0.92,
+      "defect": "frayed edge"
+    }
+  ],
+  "reason": "Visible fraying on zipper edge."
+}

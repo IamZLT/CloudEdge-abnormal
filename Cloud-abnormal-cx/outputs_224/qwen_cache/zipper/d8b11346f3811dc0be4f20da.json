@@ -1,0 +1,19 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "dents",
+  "regions": [
+    {
+      "bbox3d": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "confidence": 0.99,
+      "defect": "dents"
+    }
+  ],
+  "reason": "Minor dents detected on zipper teeth."
+}

@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "missing part",
+  "regions": [
+    {
+      "bboxd": [
+        600,
+        500,
+        800,
+        700
+      ],
+      "confidence": 0.98,
+      "defect": "missing part"
+    }
+  ],
+  "reason": "One of the three cable ends is completely missing."
+}

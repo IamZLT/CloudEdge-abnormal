@@ -1,0 +1,52 @@
+{
+  "anomaly_probability": 0.85,
+  "defect_type": "surface contamination",
+  "regions": [
+    {
+      "bbox3d": [
+        -0.01,
+        -0.01,
+        0.5,
+        0.03,
+        0.01,
+        0.03,
+        0.99,
+        0.0,
+        0.0
+      ],
+      "confidence": 0.95,
+      "defect": "red stain"
+    },
+    {
+      "bbox3d": [
+        0.01,
+        -0.01,
+        0.5,
+        0.03,
+        0.01,
+        0.03,
+        0.99,
+        0.0,
+        0.0
+      ],
+      "confidence": 0.95,
+      "defect": "red stain"
+    },
+    {
+      "bbox3d": [
+        0.01,
+        0.01,
+        0.5,
+        0.03,
+        0.01,
+        0.03,
+        0.99,
+        0.0,
+        0.0
+      ],
+      "confidence": 0.95,
+      "defect": "red stain"
+    }
+  ],
+  "reason": "visible red stains on wood surface."
+}

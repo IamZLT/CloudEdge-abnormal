@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        300,
+        300,
+        600,
+        600
+      ],
+      "confidence": 0.9,
+      "defect": "color/texture irregularity"
+    }
+  ],
+  "reason": "one blue cable has color/texture irregularity compared to others."
+}

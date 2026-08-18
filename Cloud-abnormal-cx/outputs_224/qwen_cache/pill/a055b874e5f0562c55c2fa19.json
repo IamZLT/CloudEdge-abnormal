@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "blue dot contamination",
+  "regions": [
+    {
+      "bboxd": [
+        580,
+        500,
+        600,
+        550
+      ],
+      "confidence": 0.98,
+      "defect": "blue dot contamination"
+    }
+  ],
+  "reason": "blue dot contamination detected on pill surface."
+}

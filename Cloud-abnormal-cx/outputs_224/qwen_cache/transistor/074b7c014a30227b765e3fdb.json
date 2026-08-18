@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bbox": [
+        480,
+        300,
+        520,
+        350
+      ],
+      "confidence": 0.85,
+      "defect": "surface discoloration"
+    }
+  ],
+  "reason": "minor surface discoloration detected on transistor body."
+}

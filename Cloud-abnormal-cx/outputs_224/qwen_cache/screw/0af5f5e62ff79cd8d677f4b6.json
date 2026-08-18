@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bbox": [
+        300,
+        300,
+        350,
+        350
+      ],
+      "confidence": 0.85,
+      "defect": "surface discoloration"
+    }
+  ],
+  "reason": "minor discoloration detected on screw surface."
+}

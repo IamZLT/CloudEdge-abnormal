@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "structural defect",
+  "regions": [
+    {
+      "bboxd": [
+        460,
+        600,
+        500,
+        700
+      ],
+      "confidence": 0.92,
+      "defect": "structural defect"
+    }
+  ],
+  "reason": "structural defect detected in target image."
+}

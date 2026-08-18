@@ -44,6 +44,8 @@ class CloudAnomalyDetector:
                 cfg.model.dtype,
                 cfg.qwen.max_new_tokens,
                 cfg.qwen.cache_dir,
+                cfg.qwen.min_pixels,
+                cfg.qwen.max_pixels,
             )
 
     def predict(self, sample: Sample, bank: MemoryBank) -> tuple[np.ndarray, float, QwenOpinion]:

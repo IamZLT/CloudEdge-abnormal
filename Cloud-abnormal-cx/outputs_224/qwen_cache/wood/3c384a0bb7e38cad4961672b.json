@@ -1,0 +1,27 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "scratch and debris",
+  "regions": [
+    {
+      "bbox_2d": [
+        10,
+        600,
+        100,
+        700
+      ],
+      "confidence": 0.92,
+      "defect": "scratch"
+    },
+    {
+      "bbox_2d": [
+        200,
+        650,
+        350,
+        750
+      ],
+      "confidence": 0.88,
+      "defect": "debris"
+    }
+  ],
+  "reason": "Scratches and debris detected on wood surface."
+}

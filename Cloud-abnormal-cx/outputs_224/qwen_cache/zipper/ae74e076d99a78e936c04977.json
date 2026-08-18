@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "crack",
+  "regions": [
+    {
+      "bbox": [
+        480,
+        600,
+        510,
+        620
+      ],
+      "confidence": 0.85,
+      "defect": "crack"
+    }
+  ],
+  "reason": "Visible crack in zipper teeth."
+}

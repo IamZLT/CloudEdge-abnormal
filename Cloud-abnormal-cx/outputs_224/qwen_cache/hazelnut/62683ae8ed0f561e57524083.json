@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.99,
+  "defect_type": "Cracked shell",
+  "regions": [
+    {
+      "bbox": [
+        480,
+        500,
+        520,
+        550
+      ],
+      "confidence": 0.95,
+      "defect": "Cracked shell"
+    }
+  ],
+  "reason": "Shell is cracked, indicating damage."
+}

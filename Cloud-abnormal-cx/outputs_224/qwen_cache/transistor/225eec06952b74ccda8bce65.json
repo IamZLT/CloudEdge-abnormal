@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.99,
+  "defect_type": "missing parts",
+  "regions": [
+    {
+      "bboxd": [
+        0,
+        0,
+        1000,
+        1000
+      ],
+      "confidence": 0.99,
+      "defect": "missing transistor"
+    }
+  ],
+  "reason": "Transistor completely missing from image."
+}

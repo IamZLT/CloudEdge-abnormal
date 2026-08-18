@@ -1,0 +1,22 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "surface texture irregularity",
+  "regions": [
+    {
+      "bbox3d": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "confidence": 0.95,
+      "defect": "surface texture irregularity"
+    }
+  ],
+  "reason": "Slight surface texture variation detected."
+}

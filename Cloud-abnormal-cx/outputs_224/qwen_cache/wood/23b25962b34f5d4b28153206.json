@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "minor grain variation",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        350,
+        500,
+        400
+      ],
+      "confidence": 0.78,
+      "defect": "slight grain irregularity"
+    }
+  ],
+  "reason": "Minor grain variation detected in target image."
+}

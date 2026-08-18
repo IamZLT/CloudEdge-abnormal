@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "missing part",
+  "regions": [
+    {
+      "bboxd": [
+        0,
+        0,
+        1000,
+        1000
+      ],
+      "confidence": 0.95,
+      "defect": "missing part"
+    }
+  ],
+  "reason": "Target image shows missing part compared to reference."
+}

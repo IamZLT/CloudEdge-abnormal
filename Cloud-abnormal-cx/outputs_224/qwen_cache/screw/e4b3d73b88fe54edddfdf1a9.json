@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        0,
+        0,
+        1000,
+        1000
+      ],
+      "confidence": 0.95,
+      "defect": "surface color variation"
+    }
+  ],
+  "reason": "surface color variation detected."
+}

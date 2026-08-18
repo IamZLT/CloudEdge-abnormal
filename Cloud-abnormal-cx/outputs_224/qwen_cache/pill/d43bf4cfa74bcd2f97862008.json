@@ -1,0 +1,18 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bbox": [
+        150.0,
+        250.0,
+        180.0,
+        280.0
+      ],
+      "confidence": 0.85,
+      "defect": "small red speck"
+    }
+  ],
+  "reason": "minor color speck detected in target image.",
+  "parse_fallback": true
+}

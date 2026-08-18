@@ -1,0 +1,22 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "text_corruption",
+  "regions": [
+    {
+      "bbox3d": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "confidence": 0.99,
+      "defect": "text_corruption"
+    }
+  ],
+  "reason": "text '00' is corrupted instead of '500'."
+}

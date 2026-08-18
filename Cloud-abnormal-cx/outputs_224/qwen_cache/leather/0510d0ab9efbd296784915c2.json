@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "dent",
+  "regions": [
+    {
+      "bbox": [
+        400,
+        400,
+        450,
+        500
+      ],
+      "confidence": 0.92,
+      "defect": "indentation"
+    }
+  ],
+  "reason": "clear dent detected in leather texture."
+}

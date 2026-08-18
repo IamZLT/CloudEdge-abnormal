@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        100,
+        100,
+        200,
+        200
+      ],
+      "confidence": 0.8,
+      "defect": "color/texture irregularity"
+    }
+  ],
+  "reason": "minor color variation detected."
+}

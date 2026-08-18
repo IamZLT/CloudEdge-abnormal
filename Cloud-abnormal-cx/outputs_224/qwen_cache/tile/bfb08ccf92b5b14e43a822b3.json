@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        250,
+        470,
+        270
+      ],
+      "confidence": 0.85,
+      "defect": "small dark spot"
+    }
+  ],
+  "reason": "minor color variation detected in one region."
+}

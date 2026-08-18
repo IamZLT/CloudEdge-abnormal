@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.85,
+  "defect_type": "scratch",
+  "regions": [
+    {
+      "bbox": [
+        10,
+        100,
+        100,
+        200
+      ],
+      "confidence": 0.92,
+      "defect": "scratch"
+    }
+  ],
+  "reason": "Visible scratch on wood surface."
+}

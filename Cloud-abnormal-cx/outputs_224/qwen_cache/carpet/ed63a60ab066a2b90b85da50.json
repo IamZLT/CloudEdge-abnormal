@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "minor color variation",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        650,
+        500,
+        700
+      ],
+      "confidence": 0.85,
+      "defect": "slight discoloration"
+    }
+  ],
+  "reason": "minor color variation detected in one region."
+}

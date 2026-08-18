@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "surface scratch",
+  "regions": [
+    {
+      "bbox": [
+        200,
+        100,
+        250,
+        150
+      ],
+      "confidence": 0.85,
+      "defect": "surface scratch"
+    }
+  ],
+  "reason": "Visible scratch on surface."
+}

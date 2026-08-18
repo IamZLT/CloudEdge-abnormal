@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "structural inconsistency",
+  "regions": [
+    {
+      "bboxd": [
+        10,
+        400,
+        150,
+        700
+      ],
+      "confidence": 0.92,
+      "defect": "excess metallic protrusion"
+    }
+  ],
+  "reason": "excess metallic protrusion detected on blue cable section."
+}

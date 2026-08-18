@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        480,
+        300,
+        510,
+        320
+      ],
+      "confidence": 0.92,
+      "defect": "color/texture irregularity"
+    }
+  ],
+  "reason": "Target shows color/texture irregularity on transistor body."
+}

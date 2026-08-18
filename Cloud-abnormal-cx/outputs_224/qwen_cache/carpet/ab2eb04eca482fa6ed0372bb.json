@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "contamination",
+  "regions": [
+    {
+      "bbox": [
+        100,
+        400,
+        200,
+        600
+      ],
+      "confidence": 0.92,
+      "defect": "dark spot"
+    }
+  ],
+  "reason": "Dark spot detected on carpet surface."
+}

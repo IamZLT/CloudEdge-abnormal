@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "color irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        200,
+        400,
+        300,
+        600
+      ],
+      "confidence": 0.85,
+      "defect": "blue color mismatch"
+    }
+  ],
+  "reason": "blue cable color mismatch with reference."
+}

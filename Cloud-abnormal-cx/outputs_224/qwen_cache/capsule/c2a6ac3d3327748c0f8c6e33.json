@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "deformation",
+  "regions": [
+    {
+      "bboxd": [
+        100,
+        300,
+        150,
+        400
+      ],
+      "confidence": 0.85,
+      "defect": "deformation"
+    }
+  ],
+  "reason": "Capsule shows slight deformation on left side."
+}

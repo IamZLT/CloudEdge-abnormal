@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "scratch",
+  "regions": [
+    {
+      "bbox": [
+        460,
+        680,
+        470,
+        700
+      ],
+      "confidence": 0.92,
+      "defect": "scratch"
+    }
+  ],
+  "reason": "small scratch detected on zipper teeth."
+}

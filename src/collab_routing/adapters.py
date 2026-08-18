@@ -52,6 +52,7 @@ def signal_from_route_context(
         hard_margin=float(getattr(ctx, "hard_margin", 0.05) or 0.05),
         edge_node_id=edge_node_id,
         recent_cloud=float(recent_cloud),
+        conflict=float(getattr(ctx, "conflict", 0.0) or 0.0),
     )
 
 

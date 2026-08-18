@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "contamination",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        600,
+        750,
+        950
+      ],
+      "confidence": 0.98,
+      "defect": "contamination"
+    }
+  ],
+  "reason": "clear film contamination detected."
+}

@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "crack",
+  "regions": [
+    {
+      "bbox": [
+        500,
+        700,
+        550,
+        850
+      ],
+      "confidence": 0.92,
+      "defect": "crack"
+    }
+  ],
+  "reason": "Visible crack at tip of screw head."
+}

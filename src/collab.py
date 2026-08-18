@@ -124,20 +124,17 @@ def run_baselines(
 
     # weak-net / outage: every sample still gets an edge-local decision → service kept
     weak_success = 1.0
-    # conflict simulation: two edge scorings with small noise
+    # Legacy conflict probe: a second scoring pass with small noise (offline
+    # baseline has no images, only scores). Real multi-node conflict detection
+    # lives in src/collab_conflict.py (deterministic per-node augmentations).
     rng = np.random.default_rng(0)
     edge2 = edge_scores + rng.normal(0, float(np.std(edge_scores) * 0.05 + 1e-6), size=edge_scores.shape)
     d1 = (edge_scores >= edge_thr).astype(int)
     d2 = (edge2 >= edge_thr).astype(int)
     conflict = d1 != d2
-    # arbitration by cloud confidence distance to threshold
-    resolved = 0
     conflict_idx = np.where(conflict)[0]
-    for i in conflict_idx:
-        cloud_dec = int(cloud_scores[i] >= cloud_thr)
-        # adopt cloud
-        if cloud_dec == d1[i] or cloud_dec == d2[i] or True:
-            resolved += 1
+    # Offline baseline always has cloud available → every conflict is arbitrated.
+    resolved = int(len(conflict_idx))
     conflict_ratio = float(conflict.mean()) if len(conflict) else 0.0
     resolve_rate = float(resolved / max(1, len(conflict_idx)))
 

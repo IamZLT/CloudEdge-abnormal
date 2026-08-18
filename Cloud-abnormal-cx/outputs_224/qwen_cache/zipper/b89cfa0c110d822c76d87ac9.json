@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "small scratch",
+  "regions": [
+    {
+      "bbox": [
+        480,
+        650,
+        500,
+        660
+      ],
+      "confidence": 0.85,
+      "defect": "small scratch"
+    }
+  ],
+  "reason": "small scratch detected on zipper fabric."
+}

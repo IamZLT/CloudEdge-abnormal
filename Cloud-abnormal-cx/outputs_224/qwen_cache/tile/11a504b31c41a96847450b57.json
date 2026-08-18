@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.99,
+  "defect_type": "missing part",
+  "regions": [
+    {
+      "bbox": [
+        200,
+        300,
+        700,
+        700
+      ],
+      "confidence": 0.98,
+      "defect": "missing tile"
+    }
+  ],
+  "reason": "Large missing tile detected."
+}

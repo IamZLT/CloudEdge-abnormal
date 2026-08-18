@@ -68,6 +68,7 @@ class QwenVLClient:
         prompt: str | None = None,
         adapter_path: str | None = None,
         model_family: str | None = None,
+        max_pixels: int | None = None,
     ):
         from transformers import AutoProcessor
 
@@ -97,6 +98,21 @@ class QwenVLClient:
         self.model_family = fam
 
         self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
+        # Optional resize: bound the image pixel area so the vision tower runs at a
+        # fixed budget (e.g. 224*224) instead of native resolution. None = no resize.
+        if max_pixels is not None and hasattr(self.processor, "image_processor"):
+            ip = self.processor.image_processor
+            min_pixels = min(3136, int(max_pixels))
+            if hasattr(ip, "max_pixels"):
+                ip.max_pixels = int(max_pixels)
+            if hasattr(ip, "min_pixels"):
+                ip.min_pixels = min_pixels
+            if hasattr(ip, "size"):
+                try:
+                    ip.size = {"shortest_edge": min_pixels, "longest_edge": int(max_pixels)}
+                except Exception:
+                    pass
+            print(f"[{role}] resize: max_pixels={int(max_pixels)}")
         # device="auto" / "cuda:0,1" → shard across visible GPUs (useful when single card <16GB free)
         if str(device).lower() == "auto" or ("," in str(device) and "cuda" in str(device)):
             device_map = "auto"

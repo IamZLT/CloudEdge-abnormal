@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "scratch",
+  "regions": [
+    {
+      "bbox": [
+        300,
+        200,
+        350,
+        250
+      ],
+      "confidence": 0.92,
+      "defect": "scratch"
+    }
+  ],
+  "reason": "Scratch detected on transistor body."
+}

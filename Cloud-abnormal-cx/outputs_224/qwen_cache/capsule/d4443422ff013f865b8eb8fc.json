@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        0,
+        400,
+        1000,
+        450
+      ],
+      "confidence": 0.85,
+      "defect": "color/texture irregularity"
+    }
+  ],
+  "reason": "Target capsule shows slight color variation compared to reference."
+}

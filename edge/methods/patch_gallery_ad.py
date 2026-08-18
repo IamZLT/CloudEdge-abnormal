@@ -116,6 +116,27 @@ class PatchGalleryAD:
     def score_image(self, image: Image.Image) -> tuple[float, np.ndarray]:
         return self.score_patches(self.encode_patches(image))
 
+    def calibrate_threshold_loo(
+        self,
+        paths: list[Path],
+        *,
+        seed: int = 42,
+        quantile: float = 0.95,
+    ) -> float:
+        """One-class threshold via leave-one-out (LOO) on train/good.
+
+        Gallery self-scores are ~0 (self-match), so a naive self-score quantile
+        is degenerate (thr≈0 → everything NG). LOO excludes the query image from
+        its own gallery, yielding a proper normal-reference distance distribution.
+        """
+        pts = [self.encode_patches(Image.open(p).convert("RGB")) for p in paths]
+        scores: list[float] = []
+        for i in range(len(pts)):
+            self.build_gallery_from_tokens(pts[:i] + pts[i + 1 :], seed=seed)
+            scores.append(float(self.score_image(Image.open(paths[i]).convert("RGB"))[0]))
+        self.build_gallery_from_tokens(pts, seed=seed)
+        return float(np.quantile(scores, float(quantile)))
+
     def evaluate(
         self,
         category: str,

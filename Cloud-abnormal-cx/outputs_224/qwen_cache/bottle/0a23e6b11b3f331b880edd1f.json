@@ -1,0 +1,22 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "foreign object",
+  "regions": [
+    {
+      "bbox3d": [
+        -0.1,
+        0.0,
+        0.3,
+        0.02,
+        0.02,
+        0.02,
+        0.95,
+        0.0,
+        0.0
+      ],
+      "confidence": 0.99,
+      "defect": "foreign object"
+    }
+  ],
+  "reason": "foreign object detected in liquid."
+}

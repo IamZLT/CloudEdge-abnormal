@@ -1,0 +1,7 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "color/texture irregularity",
+  "regions": [],
+  "reason": "minor color speck detected.",
+  "parse_fallback": true
+}

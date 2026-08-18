@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "color irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        580,
+        500,
+        600,
+        520
+      ],
+      "confidence": 0.85,
+      "defect": "color mismatch"
+    }
+  ],
+  "reason": "Target shows slight color variation near '500' compared to reference."
+}

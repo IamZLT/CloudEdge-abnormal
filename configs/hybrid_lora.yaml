@@ -20,6 +20,10 @@ cloud:
   device: cuda:0
   dtype: bfloat16
   max_new_tokens: 160
+  # LoRA-tuned categories (from outputs/qwen_vl_lora/sft_meta.json). The cloud
+  # review is only trusted on these; unseen categories (e.g. bottle) fall back to
+  # the hand-written margin-weighted vote instead of an out-of-domain LoRA.
+  categories: [screw, cable, pill, capsule, zipper]
 
 collab:
   low_quantile: 0.35

@@ -1,0 +1,19 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "scratch",
+  "regions": [
+    {
+      "bbox3d": [
+        0.0,
+        0.0,
+        0.5,
+        0.05,
+        0.01,
+        0.05
+      ],
+      "confidence": 0.98,
+      "defect": "scratch"
+    }
+  ],
+  "reason": "detects a small scratch on leather surface."
+}

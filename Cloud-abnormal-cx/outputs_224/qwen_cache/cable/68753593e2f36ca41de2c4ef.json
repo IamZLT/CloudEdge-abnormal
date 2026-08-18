@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "excess metallic debris",
+  "regions": [
+    {
+      "bboxd": [
+        600,
+        600,
+        800,
+        800
+      ],
+      "confidence": 0.92,
+      "defect": "excess metallic debris"
+    }
+  ],
+  "reason": "excess metallic debris on blue cable."
+}

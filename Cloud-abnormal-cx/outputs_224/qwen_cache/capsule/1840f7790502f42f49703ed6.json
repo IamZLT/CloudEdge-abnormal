@@ -1,0 +1,22 @@
+{
+  "anomaly_probability": 0.75,
+  "defect_type": "scratch",
+  "regions": [
+    {
+      "bbox3d": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "confidence": 0.99,
+      "defect": "scratch"
+    }
+  ],
+  "reason": "Scratch detected on capsule surface."
+}

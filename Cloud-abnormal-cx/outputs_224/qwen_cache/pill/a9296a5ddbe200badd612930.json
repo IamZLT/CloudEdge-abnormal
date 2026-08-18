@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "contamination",
+  "regions": [
+    {
+      "bboxd": [
+        500,
+        500,
+        550,
+        600
+      ],
+      "confidence": 0.92,
+      "defect": "yellow speck"
+    }
+  ],
+  "reason": "yellow speck detected on pill surface."
+}

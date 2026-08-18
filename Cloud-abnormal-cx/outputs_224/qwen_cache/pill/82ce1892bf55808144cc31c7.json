@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "deformation",
+  "regions": [
+    {
+      "bboxd": [
+        480,
+        600,
+        520,
+        700
+      ],
+      "confidence": 0.92,
+      "defect": "dented letter 'E'"
+    }
+  ],
+  "reason": "Target shows dented letter 'E' compared to reference 'F'."
+}

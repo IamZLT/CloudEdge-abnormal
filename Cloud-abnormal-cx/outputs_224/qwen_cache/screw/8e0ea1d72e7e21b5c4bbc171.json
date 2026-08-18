@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "minor surface imperfection",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        350,
+        465,
+        365
+      ],
+      "confidence": 0.85,
+      "defect": "scratch"
+    }
+  ],
+  "reason": "Minor surface imperfection detected."
+}

@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "surface scratch",
+  "regions": [
+    {
+      "bbox": [
+        450,
+        350,
+        550,
+        450
+      ],
+      "confidence": 0.85,
+      "defect": "surface scratch"
+    }
+  ],
+  "reason": "small scratch detected on bottle surface."
+}

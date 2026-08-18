@@ -105,6 +105,8 @@ class FrozenQwenInspector:
         dtype: str,
         max_new_tokens: int,
         cache_dir: str,
+        min_pixels: int | None = None,
+        max_pixels: int | None = None,
     ) -> None:
         from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
 
@@ -112,6 +114,20 @@ class FrozenQwenInspector:
         if not path.exists():
             raise FileNotFoundError(f"Qwen model not found: {path}")
         self.processor = AutoProcessor.from_pretrained(str(path), local_files_only=True)
+        # Optional resolution bound: pin the vision tower's pixel budget (e.g. 224*224)
+        # so the semantic verifier matches the architecture's image_size instead of the
+        # processor default (shortest_edge=256). None keeps the processor default.
+        if (min_pixels is not None or max_pixels is not None) and hasattr(self.processor, "image_processor"):
+            ip = self.processor.image_processor
+            if min_pixels is not None and hasattr(ip, "min_pixels"):
+                ip.min_pixels = int(min_pixels)
+            if max_pixels is not None and hasattr(ip, "max_pixels"):
+                ip.max_pixels = int(max_pixels)
+            if max_pixels is not None and hasattr(ip, "size"):
+                try:
+                    ip.size = {"shortest_edge": int(min_pixels or max_pixels), "longest_edge": int(max_pixels)}
+                except Exception:
+                    pass
         self.model = Qwen3_5ForConditionalGeneration.from_pretrained(
             str(path), local_files_only=True, dtype=torch_dtype(dtype), device_map=device
         ).eval()

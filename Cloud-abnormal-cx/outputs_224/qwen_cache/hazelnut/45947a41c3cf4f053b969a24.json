@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "missing part",
+  "regions": [
+    {
+      "bboxd": [
+        0,
+        400,
+        100,
+        500
+      ],
+      "confidence": 0.85,
+      "defect": "missing part"
+    }
+  ],
+  "reason": "Missing part detected on left side."
+}

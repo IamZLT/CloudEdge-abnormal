@@ -140,16 +140,17 @@ def score_edges(
             encode_patches, device=device, name="qwen35_0.8b_vision_mlpatch", fusion_temperature=fusion_temp
         )
         gallery = _gallery_paths(data_root, cat, max_gallery, seed)
-        build_s = ad.build_gallery(gallery, seed=seed)
-        g_scores = []
-        for gp in gallery:
-            s, _ = ad.score_image(Image.open(gp).convert("RGB"))
-            g_scores.append(float(s))
         thr = edge_cfg.get("threshold")
         if thr is None:
-            thr = float(np.quantile(g_scores, float(edge_cfg.get("thr_quantile") or 0.95)))
+            thr = ad.calibrate_threshold_loo(
+                gallery,
+                seed=seed,
+                quantile=float(edge_cfg.get("thr_quantile") or 0.95),
+            )
+            build_s = 0.0
         else:
             thr = float(thr)
+            build_s = ad.build_gallery(gallery, seed=seed)
 
         test_items = mvtec_test_split(data_root, cat)
         items = [

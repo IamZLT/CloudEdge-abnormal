@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.25,
+  "defect_type": "contamination",
+  "regions": [
+    {
+      "bboxd": [
+        380,
+        450,
+        400,
+        470
+      ],
+      "confidence": 0.85,
+      "defect": "blue speck contamination"
+    }
+  ],
+  "reason": "blue speck contamination detected on pill surface."
+}

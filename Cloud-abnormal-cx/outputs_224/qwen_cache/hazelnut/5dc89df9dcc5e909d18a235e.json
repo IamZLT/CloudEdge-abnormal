@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "missing part",
+  "regions": [
+    {
+      "bboxd": [
+        0,
+        300,
+        100,
+        400
+      ],
+      "confidence": 0.92,
+      "defect": "missing part"
+    }
+  ],
+  "reason": "Target nut is missing the cap compared to reference."
+}

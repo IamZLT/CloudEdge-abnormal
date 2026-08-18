@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.35,
+  "defect_type": "loose thread",
+  "regions": [
+    {
+      "bbox": [
+        910,
+        400,
+        999,
+        480
+      ],
+      "confidence": 0.89,
+      "defect": "loose thread"
+    }
+  ],
+  "reason": "loose thread detected on zipper edge."
+}

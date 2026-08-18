@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        480,
+        500,
+        500,
+        520
+      ],
+      "confidence": 0.85,
+      "defect": "small dark speck"
+    }
+  ],
+  "reason": "minor color speck detected."
+}

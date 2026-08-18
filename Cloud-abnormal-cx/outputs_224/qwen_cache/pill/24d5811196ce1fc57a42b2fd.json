@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.95,
+  "defect_type": "foreign object",
+  "regions": [
+    {
+      "bboxd": [
+        10,
+        400,
+        100,
+        500
+      ],
+      "confidence": 0.92,
+      "defect": "yellow foreign object"
+    }
+  ],
+  "reason": "yellow foreign object detected on pill surface."
+}

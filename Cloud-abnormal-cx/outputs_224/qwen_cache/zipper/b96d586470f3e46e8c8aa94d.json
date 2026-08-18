@@ -1,0 +1,19 @@
+{
+  "anomaly_probability": 0.15,
+  "defect_type": "contamination",
+  "regions": [
+    {
+      "bbox3d": [
+        0.0,
+        0.45,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "confidence": 0.95,
+      "defect": "contamination"
+    }
+  ],
+  "reason": "small dark spot on fabric surface."
+}

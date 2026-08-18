@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.1,
+  "defect_type": "color/texture irregularity",
+  "regions": [
+    {
+      "bboxd": [
+        480,
+        500,
+        560,
+        580
+      ],
+      "confidence": 0.85,
+      "defect": "color/texture irregularity"
+    }
+  ],
+  "reason": "Target shows slight color/texture irregularity compared to reference."
+}

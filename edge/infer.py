@@ -110,18 +110,20 @@ def _infer_patch_gallery(
 
     ad = PatchGalleryAD(encode_patches, device=device, name=name, fusion_temperature=fusion_temp)
     gallery = _gallery_paths(data_root, category, max_gallery, seed)
-    build_s = ad.build_gallery(gallery, seed=seed)
 
-    # calibrate threshold on gallery self-scores if not provided
+    # calibrate threshold via leave-one-out on train/good if not provided
+    # (gallery self-scores are ~0 → degenerate; LOO gives a real normal-reference)
     thr = edge.get("threshold")
     if thr is None:
-        g_scores = []
-        for gp in gallery:
-            s, _ = ad.score_image(Image.open(gp).convert("RGB"))
-            g_scores.append(s)
-        thr = float(np.quantile(g_scores, float(edge.get("thr_quantile") or 0.95)))
+        thr = ad.calibrate_threshold_loo(
+            gallery,
+            seed=seed,
+            quantile=float(edge.get("thr_quantile") or 0.95),
+        )
+        build_s = 0.0
     else:
         thr = float(thr)
+        build_s = ad.build_gallery(gallery, seed=seed)
 
     img = Image.open(image).convert("RGB")
     if torch.cuda.is_available() and device.startswith("cuda"):

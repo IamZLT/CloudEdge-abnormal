@@ -1,0 +1,17 @@
+{
+  "anomaly_probability": 0.05,
+  "defect_type": "deformation",
+  "regions": [
+    {
+      "bboxd": [
+        500,
+        600,
+        550,
+        750
+      ],
+      "confidence": 0.85,
+      "defect": "dented head"
+    }
+  ],
+  "reason": "Minor deformation detected on screw head."
+}

@@ -1,0 +1,37 @@
+{
+  "anomaly_probability": 0.85,
+  "defect_type": "scratch",
+  "regions": [
+    {
+      "bbox": [
+        10,
+        250,
+        100,
+        350
+      ],
+      "confidence": 0.92,
+      "defect": "scratch"
+    },
+    {
+      "bbox": [
+        350,
+        450,
+        450,
+        550
+      ],
+      "confidence": 0.88,
+      "defect": "scratch"
+    },
+    {
+      "bbox": [
+        750,
+        550,
+        850,
+        650
+      ],
+      "confidence": 0.85,
+      "defect": "scratch"
+    }
+  ],
+  "reason": "Multiple visible scratches on wood surface."
+}
