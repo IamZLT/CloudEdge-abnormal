@@ -138,7 +138,7 @@ def main() -> None:
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--backend", default="gguf", choices=["gguf", "hf"])
     ap.add_argument("--gguf-dir", default=DEFAULT_GGUF_DIR)
-    ap.add_argument("--model-path", default="/data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B")
+    ap.add_argument("--model-path", default="model_card/Qwen3.5-0.8B")
     ap.add_argument("--config", default=str(ROOT / "configs" / "default.yaml"))
     ap.add_argument("--tag", default="route_reuse")
     ap.add_argument("--warmup", type=int, default=1)

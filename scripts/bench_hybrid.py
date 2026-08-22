@@ -16,32 +16,12 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.evaluation import evaluate_binary, qwen_anomaly_score, summarize_inference
 from src.vlm import QwenVLClient
-
-
-def _det_binary(labels, preds, scores=None):
-    out = {
-        "f1": float(f1_score(labels, preds, zero_division=0)),
-        "precision": float(precision_score(labels, preds, zero_division=0)),
-        "recall": float(recall_score(labels, preds, zero_division=0)),
-        "accuracy": float(accuracy_score(labels, preds)),
-    }
-    if scores is not None and len(np.unique(labels)) > 1 and len(np.unique(scores)) > 1:
-        out["image_auroc"] = float(roc_auc_score(labels, scores))
-    else:
-        out["image_auroc"] = float("nan")
-    return out
 
 
 def main():
@@ -157,14 +137,17 @@ def main():
     edge_preds = (edge_scores >= thr).astype(int)
 
     # B1 edge-only
-    b1 = _det_binary(labels, edge_preds, edge_scores)
+    b1 = evaluate_binary(labels, edge_scores, thr, predictions=edge_preds)
 
     s_preds = edge_preds.copy()
     s_scores = edge_scores.copy()
+    s_valid = np.ones(len(items), dtype=bool)
     rows = []
     cloud_lats = []
+    cloud_infer_lats = []
     n_upload_ok = 0
     n_upload_attempt = 0
+    n_cloud_valid = 0
     net_outcomes = []
 
     for i, it in enumerate(items):
@@ -202,19 +185,32 @@ def main():
                 res = client.infer(img)
                 n_upload_ok += 1
                 cloud_lats.append(res.latency_ms + outcome.total_net_ms)
-                cloud_pred = 1 if res.decision == "NG" else 0
-                s_preds[i] = cloud_pred
-                s_scores[i] = res.confidence if res.decision == "NG" else (1.0 - res.confidence)
+                cloud_infer_lats.append(res.latency_ms)
+                qscore = qwen_anomaly_score(res.decision, res.confidence, res.parse_ok)
                 row["cloud"] = res.to_dict()
-                row["final_decision"] = res.decision
                 row["path_type"] = "CLOUD_REVIEW"
+                if qscore["valid"]:
+                    n_cloud_valid += 1
+                    s_preds[i] = int(qscore["prediction"])
+                    s_scores[i] = float(qscore["score"])
+                    row["final_decision"] = qscore["decision"]
+                else:
+                    s_valid[i] = False
+                    s_scores[i] = float("nan")
+                    row["final_decision"] = "REVIEW"
                 print(
-                    f"[{n_upload_ok}/{len(upload_set)}] cloud {res.decision}/{res.confidence:.2f} "
+                    f"[{n_upload_ok}/{len(upload_set)}] cloud {row['final_decision']}/{res.confidence:.2f} "
                     f"type={res.defect_type} reason={res.reason} :: {Path(img).name}"
                 )
         rows.append(row)
 
-    s = _det_binary(labels, s_preds, s_scores)
+    s = evaluate_binary(
+        labels,
+        s_scores,
+        float("nan"),
+        predictions=s_preds,
+        valid_mask=s_valid,
+    )
     net_summary = net_sim.summarize(net_outcomes)
 
     report = {
@@ -237,6 +233,10 @@ def main():
         "n": len(items),
         "n_cloud_reviews": n_upload_ok,
         "n_cloud_attempts": n_upload_attempt,
+        "n_cloud_valid": n_cloud_valid,
+        "cloud_parse_success_rate": (
+            n_cloud_valid / n_upload_ok if n_upload_ok else float("nan")
+        ),
         "hard_upload_ratio": n_upload_ok / max(1, len(items)),
         "communication": {"network": net_summary},
         "contest_mapped": {
@@ -251,6 +251,10 @@ def main():
             "cloud_mean": float(np.mean(cloud_lats)) if cloud_lats else None,
             "cloud_extra": float(collab.get("cloud_extra_latency_ms", 50.0)),
         },
+        "cloud_runtime": summarize_inference(
+            cloud_infer_lats,
+            client.model if client is not None else None,
+        ),
         "rows": rows,
     }
     n_upload = n_upload_ok  # for markdown below
@@ -268,14 +272,22 @@ def main():
         "",
         "## Detection",
         "",
-        "| Scheme | AUROC | F1 | P | R | Acc |",
-        "|--------|-------|----|---|---|-----|",
-        f"| B1 edge-only | {b1['image_auroc']:.4f} | {b1['f1']:.4f} | {b1['precision']:.4f} | {b1['recall']:.4f} | {b1['accuracy']:.4f} |",
-        f"| S collab (edge+VLM) | {s['image_auroc']:.4f} | {s['f1']:.4f} | {s['precision']:.4f} | {s['recall']:.4f} | {s['accuracy']:.4f} |",
+        "| Scheme | AUROC | AUPRC | F1 | P | R | FPR@R99 | Valid |",
+        "|--------|-------|-------|----|---|---|---------|-------|",
+        f"| B1 edge-only | {b1['image_auroc']:.4f} | {b1['image_auprc']:.4f} | {b1['f1']:.4f} | {b1['precision']:.4f} | {b1['recall']:.4f} | {b1['fpr_at_target_recall']:.4f} | {b1['valid_rate']:.2%} |",
+        f"| S collab (edge+VLM) | {s['image_auroc']:.4f} | {s['image_auprc']:.4f} | {s['f1']:.4f} | {s['precision']:.4f} | {s['recall']:.4f} | {s['fpr_at_target_recall']:.4f} | {s['valid_rate']:.2%} |",
+        "",
+        f"- Cloud parse success: **{report['cloud_parse_success_rate']:.2%}** ({n_cloud_valid}/{n_upload_ok})",
         "",
         f"- Cloud VLM mean latency: **{report['latency_ms']['cloud_mean']:.1f} ms**"
         if report["latency_ms"]["cloud_mean"]
         else "",
+        f"- Cloud VLM P95 latency: **{report['cloud_runtime']['inference_latency_ms']['p95_ms']:.1f} ms**",
+        (
+            f"- Cloud parameters: **{report['cloud_runtime']['parameters']['total_m']:.2f} M**"
+            if report["cloud_runtime"]["parameters"]["total_m"] is not None
+            else "- Cloud parameters: **not loaded**"
+        ),
         "",
         "## Cloud LLM outputs (reviewed hard samples)",
         "",

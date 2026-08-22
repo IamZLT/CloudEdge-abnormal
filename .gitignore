@@ -5,6 +5,7 @@ outputs/
 outputs_224/
 results/
 model_card/
+model_card
 *.ckpt
 *.pt
 *.pth
@@ -58,10 +59,12 @@ Thumbs.db
 
 # --- logs & temp ---
 *.log
+logs/
 tmp/
 temp/
 *.tmp
 *.bak
+*.pre_*
 
 # --- local secrets / keys ---
 *.pem
@@ -69,6 +72,12 @@ temp/
 credentials.json
 secrets.yaml
 
-# --- local-only docs (do not push) ---
-docs/
-XH-202606_*.pdf
+# --- local-only documents and operational helpers ---
+docs/*
+!docs/cloud_edge_collab_algorithms.md
+!docs/detection_agent_v1.md
+!docs/detection_agent_v2.md
+!docs/detection_agent_wr50.md
+!docs/vlm_backends.md
+scripts/reserve_gpu*.py
+scripts/run_*_missing_models.sh

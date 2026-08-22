@@ -15,7 +15,7 @@ max_ok_per_category: 40
 
 model:
   # start with 4B for faster LoRA trial; switch to 8B for cloud-aligned
-  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct
+  model_path: model_card/Qwen3-VL-4B-Instruct
   # after train, adapter saved under results_dir/adapter
   dtype: bfloat16
 

@@ -1,0 +1,17 @@
+v1_root: outputs/detection_agent_wr50_b10_mvtec
+
+verifier:
+  # Use a role- and model-separated verifier. MiniCPM's high-precision MVTec
+  # operating point makes it a better conservative gate than Qwen self-review.
+  model_id: minicpm_v_4_5_int4
+  backend: minicpm
+  model_path: model_card/MiniCPM-V-4_5-int4
+  dtype: bfloat16
+  max_new_tokens: 160
+  min_confidence: 0.90
+  require_region_agreement: true
+
+protocol:
+  version: heterogeneous_conflict_verifier_v2
+  test_labels_used_for_inference: false
+  note: freeze this policy and validate unchanged on an external held-out dataset

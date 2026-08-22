@@ -19,32 +19,12 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.evaluation import evaluate_binary, qwen_anomaly_score, summarize_inference
 from src.vlm import QwenVLClient
-
-
-def _det_binary(labels, preds, scores=None):
-    out = {
-        "f1": float(f1_score(labels, preds, zero_division=0)),
-        "precision": float(precision_score(labels, preds, zero_division=0)),
-        "recall": float(recall_score(labels, preds, zero_division=0)),
-        "accuracy": float(accuracy_score(labels, preds)),
-    }
-    if scores is not None and len(np.unique(labels)) > 1 and len(np.unique(scores)) > 1:
-        out["image_auroc"] = float(roc_auc_score(labels, scores))
-    else:
-        out["image_auroc"] = float("nan")
-    return out
 
 
 def run_one(cfg, category: str, client: QwenVLClient, max_reviews: int | None) -> dict:
@@ -68,15 +48,17 @@ def run_one(cfg, category: str, client: QwenVLClient, max_reviews: int | None) -
     labels = np.asarray([it["label"] for it in items], dtype=int)
     edge_scores = np.asarray([it["edge_score"] for it in items], dtype=float)
     edge_preds = (edge_scores >= thr).astype(int)
-    b1 = _det_binary(labels, edge_preds, edge_scores)
+    b1 = evaluate_binary(labels, edge_scores, thr, predictions=edge_preds)
 
     s_preds = edge_preds.copy()
     s_scores = edge_scores.copy()
+    s_valid = np.ones(len(items), dtype=bool)
     rows = []
     cloud_lats = []
     n_upload = 0
     cloud_fixed = 0
     cloud_wrong = 0
+    n_cloud_valid = 0
 
     for i, it in enumerate(items):
         row = {
@@ -98,27 +80,40 @@ def run_one(cfg, category: str, client: QwenVLClient, max_reviews: int | None) -
                     img = str(alt)
             res = client.infer(img)
             cloud_lats.append(res.latency_ms)
-            cloud_pred = 1 if res.decision == "NG" else 0
-            s_preds[i] = cloud_pred
-            s_scores[i] = res.confidence if res.decision == "NG" else (1.0 - res.confidence)
+            qscore = qwen_anomaly_score(res.decision, res.confidence, res.parse_ok)
             row["cloud"] = res.to_dict()
-            row["final_decision"] = res.decision
             row["path_type"] = "CLOUD_REVIEW"
             gt = int(it["label"])
-            edge_wrong = int(it["edge_pred"]) != gt
-            cloud_ok = cloud_pred == gt
-            if edge_wrong and cloud_ok:
-                cloud_fixed += 1
-            if not cloud_ok:
-                cloud_wrong += 1
+            if qscore["valid"]:
+                n_cloud_valid += 1
+                cloud_pred = int(qscore["prediction"])
+                s_preds[i] = cloud_pred
+                s_scores[i] = float(qscore["score"])
+                row["final_decision"] = qscore["decision"]
+                edge_wrong = int(it["edge_pred"]) != gt
+                cloud_ok = cloud_pred == gt
+                if edge_wrong and cloud_ok:
+                    cloud_fixed += 1
+                if not cloud_ok:
+                    cloud_wrong += 1
+            else:
+                s_valid[i] = False
+                s_scores[i] = float("nan")
+                row["final_decision"] = "REVIEW"
             print(
                 f"  [{n_upload}/{len(hard_set)}] {Path(img).name} "
                 f"GT={'NG' if gt else 'OK'} edge={row['edge_pred']} "
-                f"cloud={res.decision}/{res.confidence:.2f} | {res.reason[:60]}"
+                f"cloud={row['final_decision']}/{res.confidence:.2f} | {res.reason[:60]}"
             )
         rows.append(row)
 
-    s = _det_binary(labels, s_preds, s_scores)
+    s = evaluate_binary(
+        labels,
+        s_scores,
+        float("nan"),
+        predictions=s_preds,
+        valid_mask=s_valid,
+    )
     report = {
         "mode": "hybrid_edge_anomalib_cloud_qwen_vl",
         "category": category,
@@ -133,6 +128,8 @@ def run_one(cfg, category: str, client: QwenVLClient, max_reviews: int | None) -
         },
         "n": len(items),
         "n_cloud_reviews": n_upload,
+        "n_cloud_valid": n_cloud_valid,
+        "cloud_parse_success_rate": n_cloud_valid / n_upload if n_upload else float("nan"),
         "hard_upload_ratio": n_upload / max(1, len(items)),
         "cloud_fixed_edge": cloud_fixed,
         "cloud_wrong_on_reviewed": cloud_wrong,
@@ -141,6 +138,7 @@ def run_one(cfg, category: str, client: QwenVLClient, max_reviews: int | None) -
             "cloud_mean": float(np.mean(cloud_lats)) if cloud_lats else None,
             "cloud_extra": float(collab.get("cloud_extra_latency_ms", 50.0)),
         },
+        "cloud_runtime": summarize_inference(cloud_lats, client.model),
         "rows": rows,
     }
 
@@ -158,14 +156,20 @@ def run_one(cfg, category: str, client: QwenVLClient, max_reviews: int | None) -
         "",
         "## Detection",
         "",
-        "| Scheme | AUROC | F1 | P | R | Acc |",
-        "|--------|-------|----|---|---|-----|",
-        f"| B1 edge-only | {b1['image_auroc']:.4f} | {b1['f1']:.4f} | {b1['precision']:.4f} | {b1['recall']:.4f} | {b1['accuracy']:.4f} |",
-        f"| S collab (edge+VLM) | {s['image_auroc']:.4f} | {s['f1']:.4f} | {s['precision']:.4f} | {s['recall']:.4f} | {s['accuracy']:.4f} |",
+        "| Scheme | AUROC | AUPRC | F1 | P | R | FPR@R99 | Valid |",
+        "|--------|-------|-------|----|---|---|---------|-------|",
+        f"| B1 edge-only | {b1['image_auroc']:.4f} | {b1['image_auprc']:.4f} | {b1['f1']:.4f} | {b1['precision']:.4f} | {b1['recall']:.4f} | {b1['fpr_at_target_recall']:.4f} | {b1['valid_rate']:.2%} |",
+        f"| S collab (edge+VLM) | {s['image_auroc']:.4f} | {s['image_auprc']:.4f} | {s['f1']:.4f} | {s['precision']:.4f} | {s['recall']:.4f} | {s['fpr_at_target_recall']:.4f} | {s['valid_rate']:.2%} |",
+        "",
+        f"- Cloud parse success: **{report['cloud_parse_success_rate']:.2%}** ({n_cloud_valid}/{n_upload})",
         "",
     ]
     if report["latency_ms"]["cloud_mean"] is not None:
         lines.append(f"- Cloud VLM mean latency: **{report['latency_ms']['cloud_mean']:.1f} ms**")
+    lines.append(
+        f"- Cloud VLM P95 latency: **{report['cloud_runtime']['inference_latency_ms']['p95_ms']:.1f} ms**"
+    )
+    lines.append(f"- Cloud parameters: **{report['cloud_runtime']['parameters']['total_m']:.2f} M**")
     lines += ["", "## Cloud LLM outputs (reviewed hard samples)", ""]
 
     llm_lines = [f"# Cloud LLM outputs — `{category}`", ""]
@@ -209,9 +213,13 @@ def run_one(cfg, category: str, client: QwenVLClient, max_reviews: int | None) -
         "n": len(items),
         "n_reviews": n_upload,
         "B1_auroc": b1["image_auroc"],
+        "B1_auprc": b1["image_auprc"],
         "B1_f1": b1["f1"],
         "S_auroc": s["image_auroc"],
+        "S_auprc": s["image_auprc"],
         "S_f1": s["f1"],
+        "S_fpr_r99": s["fpr_at_target_recall"],
+        "valid_rate": s["valid_rate"],
         "delta_f1": s["f1"] - b1["f1"],
         "cloud_fixed": cloud_fixed,
         "cloud_wrong": cloud_wrong,
@@ -275,9 +283,13 @@ def main():
                     "n": r["n"],
                     "n_reviews": r["n_cloud_reviews"],
                     "B1_auroc": d["B1_edge_only"]["image_auroc"],
+                    "B1_auprc": d["B1_edge_only"].get("image_auprc", float("nan")),
                     "B1_f1": d["B1_edge_only"]["f1"],
                     "S_auroc": d["S_collab"]["image_auroc"],
+                    "S_auprc": d["S_collab"].get("image_auprc", float("nan")),
                     "S_f1": d["S_collab"]["f1"],
+                    "S_fpr_r99": d["S_collab"].get("fpr_at_target_recall", float("nan")),
+                    "valid_rate": d["S_collab"].get("valid_rate", 1.0),
                     "delta_f1": d["S_collab"]["f1"] - d["B1_edge_only"]["f1"],
                     "cloud_fixed": r.get("cloud_fixed_edge"),
                     "cloud_wrong": r.get("cloud_wrong_on_reviewed"),
@@ -300,14 +312,14 @@ def main():
         f"- Mean S F1: **{mean_s:.4f}**",
         f"- Mean ΔF1 (S-B1): **{mean_s-mean_b1:+.4f}**",
         "",
-        "| Category | n | reviews | B1 AUROC | B1 F1 | S AUROC | S F1 | ΔF1 | fixed | wrong |",
-        "|----------|---|---------|----------|-------|---------|------|-----|-------|-------|",
+        "| Category | n | reviews | B1 AUROC | B1 AUPRC | S AUROC | S AUPRC | S F1 | FPR@R99 | Valid |",
+        "|----------|---|---------|----------|----------|---------|---------|------|---------|-------|",
     ]
     for s in sorted(ok, key=lambda x: x["category"]):
         md.append(
             f"| {s['category']} | {s.get('n','')} | {s.get('n_reviews','')} | "
-            f"{s['B1_auroc']:.4f} | {s['B1_f1']:.4f} | {s['S_auroc']:.4f} | {s['S_f1']:.4f} | "
-            f"{s['delta_f1']:+.4f} | {s.get('cloud_fixed','')} | {s.get('cloud_wrong','')} |"
+            f"{s['B1_auroc']:.4f} | {s['B1_auprc']:.4f} | {s['S_auroc']:.4f} | {s['S_auprc']:.4f} | "
+            f"{s['S_f1']:.4f} | {s['S_fpr_r99']:.4f} | {s['valid_rate']:.2%} |"
         )
     out_md = root / "hybrid_mean.md"
     out_json = root / "hybrid_mean.json"

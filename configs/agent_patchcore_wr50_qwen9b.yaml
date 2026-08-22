@@ -1,0 +1,41 @@
+protocol:
+  seed: 42
+  image_size: 224
+  calibration_fraction: 0.2
+  normal_threshold_quantile: 0.99
+  batch_size: 8
+  num_workers: 2
+
+datasets:
+  mvtec: [all]
+
+expert:
+  method: patchcore_wr50
+  backbone: wide_resnet50_2
+  layers: [layer2, layer3]
+  coreset_ratio: 0.1
+  max_memory_bank: 10000
+
+router:
+  # WR50 is substantially stronger than the DINOv3 expert. Restrict the VLM
+  # attack surface to the most uncertain 10% instead of inheriting DINO's 30%.
+  review_budget: 0.10
+  concentration_weight: 0.15
+
+evidence:
+  panel_size: 256
+  top_k_regions: 2
+
+reviewer:
+  model_id: qwen3_5_9b
+  backend: transformers
+  model_path: model_card/Qwen3.5-9B
+  dtype: bfloat16
+  max_new_tokens: 160
+
+fusion:
+  min_confidence: 0.85
+  raise_weight: 0.35
+  lower_weight: 0.15
+  max_lower_abs_logit: 1.25
+  require_region_agreement: true

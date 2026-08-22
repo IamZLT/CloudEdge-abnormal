@@ -48,9 +48,9 @@ CATS = [
 ]
 
 DEFAULT_PATHS = {
-    "clip": "/data2/zlt/anomaly_detection_llm/model_card/clip-vit-large-patch14",
-    "dinov3": "/data2/zlt/anomaly_detection_llm/model_card/dinov3-vitl16-pretrain-lvd1689m",
-    "qwen35": "/data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B",
+    "clip": "model_card/clip-vit-large-patch14",
+    "dinov3": "model_card/dinov3-vitl16-pretrain-lvd1689m",
+    "qwen35": "model_card/Qwen3.5-0.8B",
 }
 
 

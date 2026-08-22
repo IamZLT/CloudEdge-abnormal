@@ -11,7 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.vlm import QwenVLClient
+from src.vlm import create_vlm_client
 
 
 def main():
@@ -20,12 +20,14 @@ def main():
     p.add_argument("--image", required=True)
     p.add_argument("--device", default=None)
     p.add_argument("--model-path", default=None)
+    p.add_argument("--backend", default=None, help="auto|qwen3_vl|transformers|internvl|minicpm")
     args = p.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     edge_cfg = cfg["edge"]
-    client = QwenVLClient(
+    client = create_vlm_client(
         model_path=args.model_path or edge_cfg["model_path"],
+        backend=args.backend or edge_cfg.get("backend", "auto"),
         device=args.device or edge_cfg.get("device", "cuda:0"),
         dtype=edge_cfg.get("dtype", "bfloat16"),
         max_new_tokens=int(edge_cfg.get("max_new_tokens", 128)),

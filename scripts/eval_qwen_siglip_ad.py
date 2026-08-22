@@ -143,7 +143,7 @@ def eval_category(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="/data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct")
+    ap.add_argument("--model", default="model_card/Qwen3-VL-4B-Instruct")
     ap.add_argument("--data-root", default=str(ROOT / "datasets" / "mvtec"))
     ap.add_argument("--categories", nargs="*", default=None)
     ap.add_argument("--shots", type=int, default=0, help="0=all normal train; k=k-shot")

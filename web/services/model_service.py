@@ -34,14 +34,17 @@ def get_cloud_client():
         if _cloud_client is not None:
             return _cloud_client
         try:
-            from src.vlm import QwenVLClient
+            from src.vlm import create_vlm_client
 
             cfg_path = ROOT / "configs" / "hybrid_lora.yaml"
             cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
             cloud = cfg["cloud"]
             device = os.environ.get("WEB_VLM_DEVICE", cloud.get("device", "cuda:0"))
-            _cloud_client = QwenVLClient(
-                model_path=cloud["model_path"],
+            model_path = os.environ.get("WEB_VLM_MODEL", cloud["model_path"])
+            backend = os.environ.get("WEB_VLM_BACKEND", cloud.get("backend", "auto"))
+            _cloud_client = create_vlm_client(
+                model_path=model_path,
+                backend=backend,
                 adapter_path=cloud.get("adapter_path"),
                 device=device,
                 dtype=cloud.get("dtype", "bfloat16"),

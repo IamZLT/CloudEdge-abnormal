@@ -9,12 +9,12 @@ Methods (16-shot train/good gallery by default):
 
 Example:
   CUDA_VISIBLE_DEVICES=1 \\
-    /home/zlt/miniconda3/envs/dinov3/bin/python scripts/bench_edge_pixel_viz.py \\
+    python scripts/bench_edge_pixel_viz.py \\
     --methods clip dinov3 --categories bottle screw --max-gallery 16
 
   # Qwen needs clip env (Qwen3VLVisionModel + safetensors / gguf):
   CUDA_VISIBLE_DEVICES=2 \\
-    /home/zlt/miniconda3/envs/clip/bin/python scripts/bench_edge_pixel_viz.py \\
+    python scripts/bench_edge_pixel_viz.py \\
     --methods qwen35 qwen35_q --categories bottle --max-gallery 16
 """
 from __future__ import annotations
@@ -52,9 +52,9 @@ CATS = [
 ]
 
 DEFAULT_PATHS = {
-    "clip": "/data2/zlt/anomaly_detection_llm/model_card/clip-vit-large-patch14",
-    "dinov3": "/data2/zlt/anomaly_detection_llm/model_card/dinov3-vitl16-pretrain-lvd1689m",
-    "qwen35": "/data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B",
+    "clip": "model_card/clip-vit-large-patch14",
+    "dinov3": "model_card/dinov3-vitl16-pretrain-lvd1689m",
+    "qwen35": "model_card/Qwen3.5-0.8B",
     "qwen35_q": str(ROOT / "model_card" / "qwen3.5VL-0.8B-q"),
 }
 

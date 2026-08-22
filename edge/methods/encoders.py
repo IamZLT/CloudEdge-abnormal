@@ -324,7 +324,7 @@ def load_qwen35_vision_encoder(
     try:
         processor = AutoProcessor.from_pretrained(str(proc_path), trust_remote_code=True)
     except Exception:
-        proc_path = Path("/data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct")
+        proc_path = Path("model_card/Qwen3-VL-4B-Instruct")
         processor = AutoProcessor.from_pretrained(str(proc_path))
         loader_note += f" | processor={proc_path.name}"
 
@@ -477,7 +477,7 @@ def load_qwen35_vision_encoder(
 def load_qwen35_mmproj_gguf(
     mmproj_gguf: str | Path,
     *,
-    config_path: str | Path = "/data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B",
+    config_path: str | Path = "model_card/Qwen3.5-0.8B",
     device: str = "cuda:0",
     max_pixels: int = 224 * 224,
     layers: list[int] | None = None,

@@ -1,0 +1,16 @@
+# Default local dataset registry. Override ``root`` in build_dataset(...) when needed.
+datasets:
+  mvtec:
+    root: datasets/mvtec
+    layout: mvtec
+
+  realiad:
+    root: datasets/realiad
+    layout: realiad
+    image_root: realiad_extracted
+    annotation_root: realiad_jsons
+
+  visa:
+    root: datasets/visa
+    layout: visa
+    subdir: 1cls

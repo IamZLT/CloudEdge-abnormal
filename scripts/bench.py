@@ -44,8 +44,8 @@ def to_markdown(report: dict, category: str) -> str:
         "",
         "## Detection",
         "",
-        "| Scheme | Image-AUROC | F1 | Precision | Recall | FN rate | FP rate |",
-        "|--------|-------------|----|-----------|--------|---------|---------|",
+        "| Scheme | AUROC | AUPRC | F1 | Precision | Recall | FPR@R99 |",
+        "|--------|-------|-------|----|-----------|--------|---------|",
     ]
     for name, key in [
         ("B0 cloud-only", "B0_cloud_only"),
@@ -56,8 +56,8 @@ def to_markdown(report: dict, category: str) -> str:
     ]:
         x = d[key]
         lines.append(
-            f"| {name} | {x['image_auroc']:.4f} | {x['f1']:.4f} | {x['precision']:.4f} | "
-            f"{x['recall']:.4f} | {x['fn_rate']:.4f} | {x['fp_rate']:.4f} |"
+            f"| {name} | {x['image_auroc']:.4f} | {x['image_auprc']:.4f} | {x['f1']:.4f} | "
+            f"{x['precision']:.4f} | {x['recall']:.4f} | {x['fpr_at_target_recall']:.4f} |"
         )
 
     lines += [
@@ -70,6 +70,8 @@ def to_markdown(report: dict, category: str) -> str:
         f"| B1 | {lat['B1']['mean_ms']:.2f} | {lat['B1']['p50_ms']:.2f} | {lat['B1']['p95_ms']:.2f} |",
         f"| S all | {lat['S_all']['mean_ms']:.2f} | {lat['S_all']['p50_ms']:.2f} | {lat['S_all']['p95_ms']:.2f} |",
         f"| S local-path | {lat['S_local_path']['mean_ms']:.2f} | {lat['S_local_path']['p50_ms']:.2f} | {lat['S_local_path']['p95_ms']:.2f} |",
+        "",
+        f"- Cloud model parameters: **{report['cloud_runtime']['parameters']['total_m']:.2f} M**",
         "",
         "## Communication",
         "",

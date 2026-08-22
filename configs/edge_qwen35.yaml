@@ -10,9 +10,9 @@ results_dir: outputs/edge_qwen35
 
 edge:
   method: qwen35                 # default; aliases: qwen35_mlpatch | clip | dinov3 | padim
-  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+  model_path: model_card/Qwen3.5-0.8B
   # Qwen3-VL processor fallback (patch packing)
-  processor_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct
+  processor_path: model_card/Qwen3-VL-4B-Instruct
   layers: [6, 8, 10, 12]         # mid→late pre-merger blocks
   fusion_temp: 0.5
   max_gallery: 16                # train/good subsample (seed)
