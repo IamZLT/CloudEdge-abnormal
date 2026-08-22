@@ -1,0 +1,20 @@
+protocol:
+  seed: 42
+  image_size: 224
+  max_test_per_category: null
+  max_train_normal: null
+  calibration_fraction: 0.2
+  normal_threshold_quantile: 0.99
+  traditional_batch_size: 8
+  num_workers: 2
+
+datasets:
+  mvtec: [all]
+
+traditional:
+  method: patchcore_dinov3_vitl16
+  backbone: dinov3_vitl16
+  model_path: model_card/dinov3-vitl16-pretrain-lvd1689m
+  layers: [24]
+  coreset_ratio: 0.1
+  max_memory_bank: 10000

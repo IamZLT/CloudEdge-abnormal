@@ -16,7 +16,7 @@ edge:
   device: cuda:0
 
 cloud:
-  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-8B-Instruct
+  model_path: model_card/Qwen3-VL-8B-Instruct
   device: cuda:0
   dtype: bfloat16
   max_new_tokens: 160
@@ -53,7 +53,7 @@ collab:
     # text|auto: reuse AD CONTEXT, skip 2nd vision encode; full: re-encode image
     vision_mode: text
     enforce_context_rules: true
-    model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3.5-0.8B
+    model_path: model_card/Qwen3.5-0.8B
     gguf_dir: model_card/qwen3.5VL-0.8B-q
     device: cuda:0
     dtype: bfloat16

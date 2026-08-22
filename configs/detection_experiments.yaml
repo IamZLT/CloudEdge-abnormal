@@ -1,0 +1,26 @@
+# Fast pilot suite. Expand categories or use CLI overrides after this passes.
+protocol:
+  seed: 42
+  image_size: 224
+  max_test_per_category: 20   # stratified OK/NG cap; null = full test split
+  max_train_normal: 100       # null = all normal training images
+  calibration_fraction: 0.2
+  normal_threshold_quantile: 0.99
+  traditional_batch_size: 8
+  num_workers: 2
+
+datasets:
+  mvtec: [bottle, screw, carpet]
+  visa: [capsules, cashew, pcb1]
+  realiad: [bottle_cap, pcb, toothbrush]
+
+# These three fit a currently available 24 GB GPU one at a time. Run 9B and
+# InternVL separately with reserved multi-GPU memory via --vlm-models and --device auto.
+vlm_models: [qwen3_5_2b, qwen3_5_4b, minicpm_v_4_5_int4]
+
+traditional:
+  method: patchcore_lite
+  backbone: resnet18
+  layers: [layer2, layer3]
+  coreset_ratio: 0.1
+  max_memory_bank: 10000

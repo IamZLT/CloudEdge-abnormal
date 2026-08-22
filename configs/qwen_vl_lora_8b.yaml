@@ -10,7 +10,7 @@ holdout_ratio: 0.4
 max_ok_per_category: 40
 
 model:
-  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-8B-Instruct
+  model_path: model_card/Qwen3-VL-8B-Instruct
   dtype: bfloat16
 
 lora:

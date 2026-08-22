@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from src.evaluation import evaluate_binary, summarize_inference
 from src.metrics import binary_detection_metrics, latency_stats, retention
 from src.models import PatchCoreLite
 from src.network_sim import NetworkSimulator, apply_collab_uploads
@@ -144,20 +145,9 @@ def run_baselines(
     b1_det = binary_detection_metrics(labels, b1_scores, edge_thr)
     # S: cloud thr only where upload succeeded; else edge thr (incl. hard fallback)
     s_preds = np.where(cloud_ok, (s_scores >= cloud_thr).astype(int), (s_scores >= edge_thr).astype(int))
-    from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, roc_auc_score
-
-    s_det = {
-        "image_auroc": float(roc_auc_score(labels, s_scores)) if len(np.unique(labels)) > 1 else float("nan"),
-        "f1": float(f1_score(labels, s_preds, zero_division=0)),
-        "precision": float(precision_score(labels, s_preds, zero_division=0)),
-        "recall": float(recall_score(labels, s_preds, zero_division=0)),
-        "accuracy": float(accuracy_score(labels, s_preds)),
-        "fn_rate": float(((labels == 1) & (s_preds == 0)).sum() / max(1, (labels == 1).sum())),
-        "fp_rate": float(((labels == 0) & (s_preds == 1)).sum() / max(1, (labels == 0).sum())),
-        "threshold_edge": edge_thr,
-        "threshold_cloud": cloud_thr,
-        "n": int(len(labels)),
-    }
+    s_det = evaluate_binary(labels, s_scores, float("nan"), predictions=s_preds)
+    s_det["threshold_edge"] = edge_thr
+    s_det["threshold_cloud"] = cloud_thr
 
     edge_mem = measure_peak_mem_mb(edge, loader, device)
     cloud_mem = measure_peak_mem_mb(cloud, loader, device)
@@ -204,6 +194,7 @@ def run_baselines(
             "S_all": s_lat_s,
             "S_local_path": s_local_lat,
         },
+        "cloud_runtime": summarize_inference(cloud_lat, cloud),
         "communication": {
             "B0_upload_bytes": b0_upload,
             "B1_upload_bytes": b1_upload,

@@ -1,0 +1,15 @@
+v1_root: outputs/detection_agent_wr50_b10_mvtec
+
+verifier:
+  model_id: qwen3_5_9b
+  backend: transformers
+  model_path: model_card/Qwen3.5-9B
+  dtype: bfloat16
+  max_new_tokens: 160
+  min_confidence: 0.90
+  require_region_agreement: true
+
+protocol:
+  version: conflict_verifier_v2
+  test_labels_used_for_inference: false
+  note: freeze this policy and validate unchanged on an external held-out dataset

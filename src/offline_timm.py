@@ -1,11 +1,20 @@
 """Offline pretrained weight helper for timm (HF hub may be unreachable)."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+_WEIGHTS_ROOT = Path(
+    os.environ.get("CLOUD_EDGE_TIMM_WEIGHTS", "model_card/timm")
+)
+
 LOCAL_WEIGHTS = {
-    "resnet18": Path.home() / ".cache/torch/hub/checkpoints/resnet18-f37072fd.pth",
-    "wide_resnet50_2": Path.home() / ".cache/torch/hub/checkpoints/wide_resnet50_2-95faca4d.pth",
+    "resnet18": _WEIGHTS_ROOT / "resnet18.tv_in1k/model.safetensors",
+    "wide_resnet50_2": _WEIGHTS_ROOT / "wide_resnet50_2.tv2_in1k/model.safetensors",
+    "vit_base_patch16_dinov3_qkvb": (
+        _WEIGHTS_ROOT
+        / "vit_base_patch16_dinov3_qkvb.eupe_lvd1689m/model.safetensors"
+    ),
     "resnet50": Path.home() / ".cache/torch/hub/checkpoints/resnet50-0676ba61.pth",
 }
 

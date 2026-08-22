@@ -11,41 +11,20 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.offline_timm import enable as enable_offline_timm
+from src.evaluation import evaluate_binary, fit_threshold, summarize_inference
 
 
 def _best_thr(labels, scores):
-    best_t, best_f1 = float(np.median(scores)), -1.0
-    for t in np.quantile(scores, np.linspace(0.05, 0.95, 37)):
-        f1 = f1_score(labels, (scores >= t).astype(int), zero_division=0)
-        if f1 > best_f1:
-            best_f1, best_t = f1, float(t)
-    return best_t
+    return fit_threshold(labels, scores, strategy="max_f1")
 
 
 def _det(labels, scores, thr):
-    preds = (scores >= thr).astype(int)
-    return {
-        "image_auroc": float(roc_auc_score(labels, scores)) if len(np.unique(labels)) > 1 else float("nan"),
-        "f1": float(f1_score(labels, preds, zero_division=0)),
-        "precision": float(precision_score(labels, preds, zero_division=0)),
-        "recall": float(recall_score(labels, preds, zero_division=0)),
-        "accuracy": float(accuracy_score(labels, preds)),
-        "fn_rate": float(((labels == 1) & (preds == 0)).sum() / max(1, (labels == 1).sum())),
-        "fp_rate": float(((labels == 0) & (preds == 1)).sum() / max(1, (labels == 0).sum())),
-        "threshold": float(thr),
-    }
+    return evaluate_binary(labels, scores, thr)
 
 
 def _load(meta_path: Path, device: str):
@@ -125,16 +104,17 @@ def to_markdown(report: dict) -> str:
             "",
             "## Detection",
             "",
-            "| Scheme | Image-AUROC | F1 | Precision | Recall | FN | FP |",
-            "|--------|-------------|----|-----------|--------|----|----|",
-            f"| B0 cloud-only | {d['B0']['image_auroc']:.4f} | {d['B0']['f1']:.4f} | {d['B0']['precision']:.4f} | {d['B0']['recall']:.4f} | {d['B0']['fn_rate']:.4f} | {d['B0']['fp_rate']:.4f} |",
-            f"| B1 edge-only | {d['B1']['image_auroc']:.4f} | {d['B1']['f1']:.4f} | {d['B1']['precision']:.4f} | {d['B1']['recall']:.4f} | {d['B1']['fn_rate']:.4f} | {d['B1']['fp_rate']:.4f} |",
-            f"| S collab | {d['S']['image_auroc']:.4f} | {d['S']['f1']:.4f} | {d['S']['precision']:.4f} | {d['S']['recall']:.4f} | {d['S']['fn_rate']:.4f} | {d['S']['fp_rate']:.4f} |",
+            "| Scheme | AUROC | AUPRC | F1 | Precision | Recall | FPR@R99 |",
+            "|--------|-------|-------|----|-----------|--------|---------|",
+            f"| B0 cloud-only | {d['B0']['image_auroc']:.4f} | {d['B0']['image_auprc']:.4f} | {d['B0']['f1']:.4f} | {d['B0']['precision']:.4f} | {d['B0']['recall']:.4f} | {d['B0']['fpr_at_target_recall']:.4f} |",
+            f"| B1 edge-only | {d['B1']['image_auroc']:.4f} | {d['B1']['image_auprc']:.4f} | {d['B1']['f1']:.4f} | {d['B1']['precision']:.4f} | {d['B1']['recall']:.4f} | {d['B1']['fpr_at_target_recall']:.4f} |",
+            f"| S collab | {d['S']['image_auroc']:.4f} | {d['S']['image_auprc']:.4f} | {d['S']['f1']:.4f} | {d['S']['precision']:.4f} | {d['S']['recall']:.4f} | {d['S']['fpr_at_target_recall']:.4f} |",
             "",
             "## Latency / Communication",
             "",
             f"- Edge infer: **{lat['edge_infer_ms']:.2f} ms/img**",
             f"- Cloud infer: **{lat['cloud_infer_ms']:.2f} ms/img**",
+            f"- Cloud parameters: **{report['cloud_runtime']['parameters']['total_m']:.2f} M**",
             f"- B0 mean: **{lat['B0_mean']:.2f} ms**",
             f"- B1 mean: **{lat['B1_mean']:.2f} ms**",
             f"- S local-path mean: **{lat['S_local_mean']:.2f} ms**",
@@ -265,16 +245,7 @@ def bench_category(cfg: dict, category: str, device: str) -> dict:
     b0 = _det(labels, cloud_scores, cloud_thr)
     b1 = _det(labels, edge_scores, edge_thr)
     s_preds = np.where(cloud_ok, (s_scores >= cloud_thr).astype(int), (s_scores >= edge_thr).astype(int))
-    s = {
-        "image_auroc": float(roc_auc_score(labels, s_scores)) if len(np.unique(labels)) > 1 else float("nan"),
-        "f1": float(f1_score(labels, s_preds, zero_division=0)),
-        "precision": float(precision_score(labels, s_preds, zero_division=0)),
-        "recall": float(recall_score(labels, s_preds, zero_division=0)),
-        "accuracy": float(accuracy_score(labels, s_preds)),
-        "fn_rate": float(((labels == 1) & (s_preds == 0)).sum() / max(1, (labels == 1).sum())),
-        "fp_rate": float(((labels == 0) & (s_preds == 1)).sum() / max(1, (labels == 0).sum())),
-        "threshold": None,
-    }
+    s = evaluate_binary(labels, s_scores, float("nan"), predictions=s_preds)
 
     b0_mean = cloud_lat + extra
     b1_mean = edge_lat
@@ -308,6 +279,9 @@ def bench_category(cfg: dict, category: str, device: str) -> dict:
             "edge_infer_ms": edge_lat,
             "cloud_infer_ms": cloud_lat,
         },
+        # Anomalib currently exposes a dataset-average per-image latency here;
+        # future runners can pass the full per-image list to the same interface.
+        "cloud_runtime": summarize_inference([cloud_lat] * n, cloud_model),
         "communication": {
             "hard_ratio": n_hard / max(1, n),
             "B0_upload_bytes": n * up_full,
@@ -351,9 +325,13 @@ def aggregate_reports(reports: list[dict]) -> dict:
     det = {
         sch: {
             "image_auroc": _mean([r["detection"][sch]["image_auroc"] for r in reports]),
+            "image_auprc": _mean([r["detection"][sch]["image_auprc"] for r in reports]),
             "f1": _mean([r["detection"][sch]["f1"] for r in reports]),
             "precision": _mean([r["detection"][sch]["precision"] for r in reports]),
             "recall": _mean([r["detection"][sch]["recall"] for r in reports]),
+            "fpr_at_target_recall": _mean(
+                [r["detection"][sch]["fpr_at_target_recall"] for r in reports]
+            ),
         }
         for sch in schemes
     }
@@ -417,11 +395,11 @@ def aggregate_markdown(agg: dict, device: str) -> str:
         "",
         "## Mean Detection (category-average)",
         "",
-        "| Scheme | Image-AUROC | F1 | Precision | Recall |",
-        "|--------|-------------|----|-----------|--------|",
-        f"| B0 cloud-only | {d['B0']['image_auroc']:.4f} | {d['B0']['f1']:.4f} | {d['B0']['precision']:.4f} | {d['B0']['recall']:.4f} |",
-        f"| B1 edge-only | {d['B1']['image_auroc']:.4f} | {d['B1']['f1']:.4f} | {d['B1']['precision']:.4f} | {d['B1']['recall']:.4f} |",
-        f"| S collab | {d['S']['image_auroc']:.4f} | {d['S']['f1']:.4f} | {d['S']['precision']:.4f} | {d['S']['recall']:.4f} |",
+        "| Scheme | AUROC | AUPRC | F1 | Precision | Recall | FPR@R99 |",
+        "|--------|-------|-------|----|-----------|--------|---------|",
+        f"| B0 cloud-only | {d['B0']['image_auroc']:.4f} | {d['B0']['image_auprc']:.4f} | {d['B0']['f1']:.4f} | {d['B0']['precision']:.4f} | {d['B0']['recall']:.4f} | {d['B0']['fpr_at_target_recall']:.4f} |",
+        f"| B1 edge-only | {d['B1']['image_auroc']:.4f} | {d['B1']['image_auprc']:.4f} | {d['B1']['f1']:.4f} | {d['B1']['precision']:.4f} | {d['B1']['recall']:.4f} | {d['B1']['fpr_at_target_recall']:.4f} |",
+        f"| S collab | {d['S']['image_auroc']:.4f} | {d['S']['image_auprc']:.4f} | {d['S']['f1']:.4f} | {d['S']['precision']:.4f} | {d['S']['recall']:.4f} | {d['S']['fpr_at_target_recall']:.4f} |",
         "",
         "## Per-category Image-AUROC",
         "",

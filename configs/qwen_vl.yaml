@@ -2,7 +2,7 @@
 # Env: conda activate base  (transformers>=4.57 + Qwen3VL)
 # Local weights under anomaly_detection_llm/model_card
 
-data_root: datasets/mvtec
+dataset: mvtec
 category: bottle
 seed: 42
 results_dir: outputs/qwen_vl
@@ -10,7 +10,8 @@ results_dir: outputs/qwen_vl
 # edge = small VLM, cloud = large VLM
 edge:
   role: edge
-  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct
+  backend: qwen3_vl
+  model_path: model_card/Qwen3-VL-4B-Instruct
   device: cuda:0
   dtype: bfloat16          # bfloat16 | float16 | auto
   max_new_tokens: 128
@@ -20,7 +21,8 @@ edge:
 
 cloud:
   role: cloud
-  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-8B-Instruct
+  backend: qwen3_vl
+  model_path: model_card/Qwen3-VL-8B-Instruct
   device: cuda:1
   dtype: bfloat16
   max_new_tokens: 160

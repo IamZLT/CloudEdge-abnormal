@@ -15,7 +15,7 @@ edge:
 
 cloud:
   # must match the base used for LoRA training
-  model_path: /data2/zlt/anomaly_detection_llm/model_card/Qwen3-VL-4B-Instruct
+  model_path: model_card/Qwen3-VL-4B-Instruct
   adapter_path: outputs/qwen_vl_lora/adapter
   device: cuda:0
   dtype: bfloat16
